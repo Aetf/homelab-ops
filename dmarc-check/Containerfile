@@ -1,0 +1,28 @@
+# Self-contained image for the daily DMARC report triage job. Nothing from
+# the host is required at runtime except the injected credentials (env file),
+# a mounted copy of the Claude Code OAuth credential, and a state volume.
+#
+# Built from a pinned commit of this repo by the mise `projects:sync` task
+# (see ~/.config/mise/conf.d/homelab.toml); run once a day by a systemd timer
+# via a quadlet .container unit.
+FROM docker.io/library/python:3.13-slim
+
+# claude CLI is installed via the official standalone installer, pinned to the
+# same version the host runs so behaviour matches. It lands in ~/.local/bin.
+ARG CLAUDE_VERSION=2.1.199
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE_VERSION"
+
+ENV PATH="/root/.local/bin:$PATH" \
+    STATE_DIR=/state \
+    DISABLE_AUTOUPDATER=1 \
+    DISABLE_TELEMETRY=1 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+# Pure stdlib script — no pip dependencies.
+COPY dmarc_check.py /app/dmarc_check.py
+
+VOLUME /state
+ENTRYPOINT ["python", "/app/dmarc_check.py"]
