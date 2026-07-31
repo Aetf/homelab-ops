@@ -356,13 +356,27 @@ def imap_store(m, uid, flag_type, value):
 
 
 def mark_clean(m, uid):
-    """Mark read and archive (remove the Gmail INBOX label).
+    """Mark read and archive.
 
-    Gmail system labels use a single backslash (\\Inbox); \\Seen is a standard
-    IMAP flag. Both must reach the wire as one backslash.
+    `-X-GM-LABELS (\\Inbox)` looks like it succeeds (STORE returns OK) but is
+    a silent no-op: Gmail excludes the currently-selected folder's own label
+    from X-GM-LABELS, and a message can't have that label removed via STORE
+    while its folder is selected. The message stays in the inbox.
+
+    The working method: set \\Deleted and EXPUNGE while INBOX is selected.
+    Gmail interprets that as "archive" (label removed, message kept in All
+    Mail) rather than a real delete, per the account's Settings > Forwarding
+    and POP/IMAP > "When a message is marked as deleted and expunged..."
+    setting -- this only holds if that's set to its default, "Archive the
+    message" (verified for this account before relying on it here).
     """
-    imap_store(m, uid, "+FLAGS", r"(\Seen)")
-    imap_store(m, uid, "-X-GM-LABELS", r"(\Inbox)")
+    imap_store(m, uid, "+FLAGS", r"(\Seen \Deleted)")
+    if CONFIG["dry_run"]:
+        log(f"[dry-run] would UID EXPUNGE uid={uid.decode()}")
+        return
+    typ, data = m.uid("EXPUNGE", uid)
+    if typ != "OK":
+        log(f"WARN UID EXPUNGE uid={uid.decode()} -> {typ} {data}")
 
 
 def tag_issue(m, uid):
