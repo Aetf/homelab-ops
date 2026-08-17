@@ -5,7 +5,7 @@ set -euo pipefail
 G=$HOME/.config/gw-config/backups
 
 rsync -rtq gw:/data/unifi/data/backup/autobackup/ "$G/unifi/" 2>/dev/null
-rsync -tq gw:/data/custom/machines/adguard/opt/AdGuardHome/AdGuardHome.yaml \
+rsync -tq gw:/data/adguard/AdGuardHome.yaml \
     "$G/adguard/AdGuardHome.yaml" 2>/dev/null
 ssh gw 'du -sh /data/custom/machines/* 2>/dev/null; echo
     machinectl list --no-legend; echo
