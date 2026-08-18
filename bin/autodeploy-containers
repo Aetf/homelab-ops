@@ -28,13 +28,23 @@ CLONE=${XDG_DATA_HOME:-$HOME/.local/share}/homelab-containers-deploy
 STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/autodeploy-containers
 MAILTO=pfyu817@gmail.com
 
-# Auto-deployed targets, staged low-risk first (caddy = reverse proxy,
-# adguard = whole-house DNS). rpi-host (reflashes + reboots the TBR host) and
-# otbr (builds upstream HEAD, not a pin) stay manual on purpose.
-TARGETS=(caddy adguard)
+# Auto-deployed targets, staged so a bad image can't take out both DNS
+# instances: adguard-bob goes first as the canary, caddy next, adguard-alice
+# last — a failure anywhere holds every later target, so alice keeps serving
+# the old known-good image whenever bob's deploy breaks. rpi-host (reflashes +
+# reboots the TBR host) and otbr (builds upstream HEAD, not a pin) stay manual
+# on purpose.
+TARGETS=(adguard-bob caddy adguard-alice)
 declare -A TARGET_PATHS=(
     [caddy]="caddy shared versions.env Justfile"
-    [adguard]="adguard shared versions.env Justfile"
+    [adguard-bob]="adguard shared versions.env Justfile"
+    [adguard-alice]="adguard shared versions.env Justfile"
+)
+# What `just deploy` gets called with for each target (word-split on purpose).
+declare -A TARGET_DEPLOY=(
+    [caddy]="caddy"
+    [adguard-bob]="adguard instance=bob"
+    [adguard-alice]="adguard instance=alice"
 )
 
 # just is zinit-installed on this host, outside the systemd user PATH.
@@ -104,7 +114,8 @@ for t in "${pending[@]}"; do
     fi
     echo "$t: deploying ${last:0:8} -> ${sha:0:8}"
     log=$(mktemp)
-    if (cd "$CLONE" && "$JUST" deploy "$t") >"$log" 2>&1; then
+    # shellcheck disable=SC2086  # deploy args are a word list on purpose
+    if (cd "$CLONE" && "$JUST" deploy ${TARGET_DEPLOY[$t]}) >"$log" 2>&1; then
         echo "$sha" >"$STATE_DIR/$t.deployed"
         rm -f "$STATE_DIR/$t.failed"
         echo "$t: deployed ${sha:0:8}"
