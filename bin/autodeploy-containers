@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Reconciler: keep deployed homelab-containers targets in sync with the repo's
+# origin/main. Driven by autodeploy-containers.timer (systemd user unit) every
+# few minutes; being a reconciler (not an event consumer) it converges after
+# downtime, failed runs, or several merges landing at once.
+#
+# Per tick: fetch origin/main; if a target's last-deployed commit differs and
+# the diff touches its paths, run `just deploy <target>` from a dedicated
+# clone (never the interactive checkout). Deploys only commits whose CI
+# concluded green. The deploy recipes carry their own validate-then-swap +
+# health check + auto-rollback, so a bad image self-heals; this script only
+# decides WHEN to deploy.
+#
+# Failure handling: a failed deploy emails once and holds that target (and
+# everything after it - shared bumps likely break the next target the same
+# way) until main moves again. State lives in $STATE_DIR:
+#   <target>.deployed  last commit successfully deployed
+#   <target>.failed    commit whose deploy failed; hold while main == it
+#   ci-failed-<sha>    stamp: already emailed about this red main commit
+# An absent .deployed stamp means "assume current main is deployed" (true at
+# install time); empty state never triggers a blind deploy.
+
+set -euo pipefail
+
+REPO_URL=https://github.com/Aetf/homelab-containers
+REPO_API=repos/Aetf/homelab-containers
+CLONE=${XDG_DATA_HOME:-$HOME/.local/share}/homelab-containers-deploy
+STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/autodeploy-containers
+MAILTO=pfyu817@gmail.com
+
+# Auto-deployed targets, staged low-risk first (caddy = reverse proxy,
+# adguard = whole-house DNS). rpi-host (reflashes + reboots the TBR host) and
+# otbr (builds upstream HEAD, not a pin) stay manual on purpose.
+TARGETS=(caddy adguard)
+declare -A TARGET_PATHS=(
+    [caddy]="caddy shared versions.env Justfile"
+    [adguard]="adguard shared versions.env Justfile"
+)
+
+# just is zinit-installed on this host, outside the systemd user PATH.
+JUST=$(command -v just || echo "$HOME/.local/share/zsh/zinit/polaris/bin/just")
+
+mkdir -p "$STATE_DIR"
+exec 9>"$STATE_DIR/lock"
+flock -n 9 || { echo "another run holds the lock (manual or previous tick); skipping"; exit 0; }
+
+notify() {
+    local subject=$1 body=$2
+    echo "$subject"
+    printf '%s\n' "$body" | mail -A Google -s "[autodeploy-containers] $subject" "$MAILTO" || true
+}
+
+[[ -d $CLONE/.git ]] || git clone -q "$REPO_URL" "$CLONE"
+git -C "$CLONE" fetch -q origin main
+sha=$(git -C "$CLONE" rev-parse origin/main)
+
+for t in "${TARGETS[@]}"; do
+    [[ -f $STATE_DIR/$t.deployed ]] || echo "$sha" >"$STATE_DIR/$t.deployed"
+done
+
+pending=()
+for t in "${TARGETS[@]}"; do
+    [[ $(cat "$STATE_DIR/$t.deployed") == "$sha" ]] || pending+=("$t")
+done
+if (( ${#pending[@]} == 0 )); then
+    echo "up to date at ${sha:0:8}"
+    exit 0
+fi
+
+# CI gate. Every push to main triggers the CI workflow, so "no check runs"
+# only means "not started yet" - wait for the next tick either way.
+checks=$(gh api "$REPO_API/commits/$sha/check-runs" \
+    --jq '{total: .total_count,
+           unfinished: [.check_runs[] | select(.status != "completed")] | length,
+           bad: [.check_runs[] | select(.conclusion and (.conclusion | IN("success","neutral","skipped") | not))] | length}')
+if (( $(jq .bad <<<"$checks") > 0 )); then
+    if [[ ! -f $STATE_DIR/ci-failed-$sha ]]; then
+        touch "$STATE_DIR/ci-failed-$sha"
+        notify "CI failed on main @ ${sha:0:8}; deploy held" \
+            "https://github.com/Aetf/homelab-containers/commit/$sha"
+    fi
+    exit 0
+fi
+if (( $(jq .total <<<"$checks") == 0 || $(jq .unfinished <<<"$checks") > 0 )); then
+    echo "CI not finished for ${sha:0:8}; retrying next tick"
+    exit 0
+fi
+
+git -C "$CLONE" checkout -qf --detach "$sha"
+
+rc=0
+for t in "${pending[@]}"; do
+    if [[ -f $STATE_DIR/$t.failed && $(cat "$STATE_DIR/$t.failed") == "$sha" ]]; then
+        echo "$t: deploy of ${sha:0:8} already failed; holding this and later targets until main moves"
+        break
+    fi
+    last=$(cat "$STATE_DIR/$t.deployed")
+    # shellcheck disable=SC2086  # TARGET_PATHS is a list on purpose
+    if git -C "$CLONE" cat-file -e "$last" 2>/dev/null \
+       && [[ -z $(git -C "$CLONE" diff --name-only "$last" "$sha" -- ${TARGET_PATHS[$t]}) ]]; then
+        echo "$t: no relevant changes in ${last:0:8}..${sha:0:8}"
+        echo "$sha" >"$STATE_DIR/$t.deployed"
+        continue
+    fi
+    echo "$t: deploying ${last:0:8} -> ${sha:0:8}"
+    log=$(mktemp)
+    if (cd "$CLONE" && "$JUST" deploy "$t") >"$log" 2>&1; then
+        echo "$sha" >"$STATE_DIR/$t.deployed"
+        rm -f "$STATE_DIR/$t.failed"
+        echo "$t: deployed ${sha:0:8}"
+        rm -f "$log"
+    else
+        echo "$sha" >"$STATE_DIR/$t.failed"
+        cat "$log"  # full log into the journal
+        notify "$t deploy failed @ ${sha:0:8}; holding until main moves" \
+            "$(printf 'Deploy log tail (journalctl --user -u autodeploy-containers for the rest):\n\n%s' "$(tail -40 "$log")")"
+        rm -f "$log"
+        rc=1
+        break
+    fi
+done
+
+# Old red-commit stamps are worthless once main moved past them.
+find "$STATE_DIR" -name 'ci-failed-*' -mtime +30 -delete
+exit "$rc"
