@@ -1,0 +1,10 @@
+# Pin wrapper for bakito/adguardhome-sync: keeps the version choice in this
+# repo (same review/pin flow as everything else) while projects:sync builds
+# the local tag the quadlet unit runs. Config is pure env: non-secret values
+# live in the .container unit, credentials in the git-crypted
+# ~/.config/adguardhome-sync/env file.
+#
+# One-way sync adguard-alice (origin, 10.0.5.3) -> adguard-bob (replica,
+# 10.0.5.4) on the UDM-SE; both sides authenticate as the dedicated `sync`
+# user present in both instances' AdGuardHome.yaml.
+FROM ghcr.io/bakito/adguardhome-sync:v0.9.2

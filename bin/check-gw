@@ -13,9 +13,9 @@ issues=()
 drift=$("$HOME/.config/gw-config/deploy.sh" --check 2>/dev/null || true)
 [[ -n ${drift//[[:space:]]/} ]] && issues+=("config drift on gw (repo is source of truth; run gw-config/deploy.sh to apply):"$'\n'"$drift")
 
-# 2. Both nspawn containers running
+# 2. All nspawn containers running
 running=$(ssh -o BatchMode=yes -o ConnectTimeout=10 gw 'machinectl list --no-legend' 2>/dev/null)
-for m in adguard caddy; do
+for m in adguard-alice adguard-bob caddy; do
     grep -q "^$m " <<<"$running" || issues+=("container $m not running")
 done
 
