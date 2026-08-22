@@ -26,6 +26,23 @@ scoped to the homelab host via a yadm `##h.<hostname>` alternate.
   `DMARC-Issue`, asks `claude` to triage spoofing-vs-misconfig, and mails an
   alert. Credentials are injected at runtime (`~/.config/dmarc-check/env`);
   claude auth is a mounted host credential. See `dmarc-check/dmarc_check.py`.
+- `adguardhome-sync/` — pin wrapper for
+  [bakito/adguardhome-sync](https://github.com/bakito/adguardhome-sync),
+  keeping the AdGuard replica on the gateway in sync with the primary.
+  Config is pure env in the quadlet unit; credentials live in a
+  git-crypted env file in the dotfiles repo.
+- `seedwatch/` — qBittorrent seed lifecycle reconciler with a small web
+  UI. The download client hardlinks completed torrents into the media
+  library, so `st_nlink == 1` on every media file of a settled torrent
+  means the library dropped it: such torrents are auto-tagged `ToDelete`
+  (a `Keep` tag vetoes), and `ToDelete` torrents whose per-tracker share
+  ratio target is met are deleted through the qB API, cross-seed aware
+  (the last torrent holding a shared file is the one that deletes it).
+  The tag is the sole delete authorization; the web UI serves the report
+  (partial deletions, anomalies, orphan files) and one-click tag
+  adjudication. Policy lives in a mounted `config.toml`; `dry_run` mode
+  logs intended actions to an audit journal without mutating anything.
+  Runs as a long-lived quadlet service; see `seedwatch/`.
 
 ## Installation
 

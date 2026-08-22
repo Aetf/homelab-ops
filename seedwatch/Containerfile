@@ -1,0 +1,25 @@
+# seedwatch: qBittorrent seed lifecycle reconciler + web UI.
+#
+# Built from a pinned commit of this repo by the mise `projects:sync` task
+# (see ~/.config/mise/conf.d/homelab.toml); runs as a quadlet .container
+# unit with host networking (qB WebUI localhost auth bypass) and a
+# read-only bind of the Downloads tree — file deletion is always delegated
+# to qBittorrent, this process only stats.
+FROM ghcr.io/astral-sh/uv:python3.13-alpine
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY src ./src
+COPY web ./web
+RUN uv sync --frozen --no-dev
+
+ENV DATA_DIR=/data \
+    SEEDWATCH_CONFIG=/config/config.toml \
+    PATH="/app/.venv/bin:$PATH"
+VOLUME /data
+EXPOSE 8490
+
+CMD ["python", "-m", "seedwatch.main"]

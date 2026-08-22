@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>seedwatch</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 14px/1.5 system-ui, sans-serif; margin: 1.5rem auto; max-width: 72rem;
+    padding: 0 1rem;
+    background: light-dark(#fafafa, #14161a); color: light-dark(#1c1e21, #d8dade);
+  }
+  h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin: 1.6rem 0 .4rem; }
+  .muted { color: light-dark(#68707a, #8b949e); }
+  .banner { padding: .5rem .8rem; border-radius: 6px; margin: .6rem 0; }
+  .dry { background: light-dark(#fff3cd, #3a3320); }
+  .err { background: light-dark(#f8d7da, #40272a); }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .28rem .5rem; border-bottom: 1px solid light-dark(#e3e5e8, #2a2e34); }
+  th { font-weight: 600; color: light-dark(#454b52, #a8b0b8); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .name { max-width: 32rem; overflow-wrap: anywhere; }
+  .tag { display: inline-block; padding: 0 .4rem; border-radius: 4px; font-size: .8rem;
+         background: light-dark(#e7ebf0, #2c313a); margin-right: .25rem; }
+  .tag.ToDelete { background: light-dark(#fde2e1, #46262b); }
+  .tag.Keep { background: light-dark(#dcefdc, #24382a); }
+  button { font: inherit; font-size: .8rem; padding: .1rem .5rem; border-radius: 4px;
+           border: 1px solid light-dark(#c8cdd3, #3d434b);
+           background: light-dark(#fff, #1e2228); color: inherit; cursor: pointer; }
+  button:hover { background: light-dark(#f0f2f4, #2a2f37); }
+  .summary span { margin-right: 1.2rem; }
+  details > summary { cursor: pointer; margin: 1.6rem 0 .4rem; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>seedwatch <span id="scanning" class="muted"></span></h1>
+<div id="banners"></div>
+<p class="summary" id="summary"></p>
+<p><button onclick="rescan()">重新扫描</button>
+   <span class="muted" id="generated"></span></p>
+<div id="sections"></div>
+<script>
+const fmtSize = n => { for (const u of ['B','K','M','G','T']) { if (Math.abs(n) < 1024) return n.toFixed(1)+u; n /= 1024; } return n.toFixed(1)+'P'; };
+const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function api(method, path) {
+  const r = await fetch(path, {method});
+  if (!r.ok) alert(`${method} ${path}: ${r.status}`);
+  setTimeout(load, 800);
+}
+const rescan = () => api('POST', '/api/rescan');
+const tag = (h, t) => api('POST', `/api/torrents/${h}/tags/${t}`);
+const untag = (h, t) => api('DELETE', `/api/torrents/${h}/tags/${t}`);
+
+function tagChips(t) {
+  return t.tags.map(x => `<span class="tag ${esc(x)}">${esc(x)}${
+    (x === 'ToDelete' || x === 'Keep')
+      ? ` <a href="#" onclick="untag('${t.hash}','${x}');return false">×</a>` : ''
+  }</span>`).join('');
+}
+function actionBtns(t) {
+  let b = '';
+  if (!t.tags.includes('ToDelete')) b += `<button onclick="tag('${t.hash}','ToDelete')">ToDelete</button> `;
+  if (!t.tags.includes('Keep')) b += `<button onclick="tag('${t.hash}','Keep')">Keep</button>`;
+  return b;
+}
+function torrentTable(rows, extraCols = []) {
+  if (!rows.length) return '<p class="muted">（无）</p>';
+  const head = ['分类', '名称', '大小', 'ratio / 目标', ...extraCols.map(c => c[0]), '标签', '操作'];
+  return `<table><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr>` + rows.map(t => `
+    <tr><td>${esc(t.category)}</td><td class="name">${esc(t.name)}</td>
+    <td class="num">${fmtSize(t.size)}</td>
+    <td class="num">${t.ratio.toFixed(2)} / ${t.ratio_target}</td>
+    ${extraCols.map(c => `<td>${c[1](t)}</td>`).join('')}
+    <td>${tagChips(t)}</td><td>${actionBtns(t)}</td></tr>`).join('') + '</table>';
+}
+function section(title, html, open = true) {
+  return open ? `<h2>${title}</h2>${html}`
+              : `<details><summary>${title}</summary>${html}</details>`;
+}
+
+async function load() {
+  const data = await (await fetch('/api/report')).json();
+  document.getElementById('scanning').textContent = data.scanning ? '（扫描中…）' : '';
+  const banners = [];
+  if (data.dry_run) banners.push('<div class="banner dry">dry-run 模式：只报告、打标和删除都不会真正执行。确认无误后在配置里关闭。</div>');
+  if (data.error) banners.push(`<div class="banner err">上次扫描失败：${esc(data.error.detail)}</div>`);
+  document.getElementById('banners').innerHTML = banners.join('');
+  const rep = data.report;
+  if (!rep) { document.getElementById('summary').textContent = '首次扫描尚未完成…'; return; }
+  document.getElementById('generated').textContent =
+    '上次扫描: ' + new Date(rep.generated_at * 1000).toLocaleString();
+
+  const by = s => rep.torrents.filter(t => t.status === s);
+  const partial = by('partial');
+  const unref = by('unreferenced');
+  const anomaly = [...by('missing'), ...by('no_media')];
+  const waiting = rep.torrents.filter(t => t.tags.includes('ToDelete') && !t.tags.includes('Keep'));
+  const counts = {};
+  for (const t of rep.torrents) counts[t.status] = (counts[t.status] || 0) + 1;
+  document.getElementById('summary').innerHTML =
+    `<span>共 ${rep.torrents.length} 个 torrent</span>` +
+    Object.entries(counts).map(([k, v]) => `<span>${k}: ${v}</span>`).join('');
+
+  const secs = [];
+  secs.push(section(`① 部分引用 — 需人工裁决 (${partial.length})`,
+    torrentTable(partial, [['引用', t => `${t.media_total - t.media_unref}/${t.media_total} 保留，可释放 ${fmtSize(t.unref_bytes)}`]])));
+  secs.push(section(`② Media 已全删（自动打标范围）(${unref.length})`,
+    torrentTable(unref)));
+  secs.push(section(`③ 待收割队列 — ToDelete 等 ratio 达标 (${waiting.length})`,
+    torrentTable(waiting, [['做种天数', t => t.seeding_days], ['tracker', t => esc(t.tracker)]])));
+  secs.push(section(`④ 本轮动作 (${rep.actions_taken.length})`,
+    rep.actions_taken.length ? '<table><tr><th>动作</th><th>名称</th><th>ratio</th><th>详情</th></tr>' +
+      rep.actions_taken.map(a => `<tr><td>${a.action}${a.dry_run ? ' (dry-run)' : ''}</td>
+        <td class="name">${esc(a.name)}</td><td class="num">${a.ratio}</td>
+        <td>${a.action === 'reap' ? (a.delete_files ? '删文件' : '仅删条目，文件由 ' + esc((a.shared_with || []).join(', ')) + ' 保留') : ''}</td></tr>`).join('')
+      + '</table>' : '<p class="muted">（无）</p>'));
+  secs.push(section(`⑤ 异常 — 文件缺失 / 无媒体文件 (${anomaly.length})`,
+    torrentTable(anomaly, [['状态', t => t.status]]), anomaly.length > 0));
+  secs.push(section(`⑥ cross-seed 组 (${rep.cross_seed.length})`,
+    rep.cross_seed.length ? '<ul>' + rep.cross_seed.map(g => `<li>${g.map(esc).join(' ⇄ ')}</li>`).join('') + '</ul>'
+      : '<p class="muted">（无）</p>', false));
+  secs.push(section(`⑦ 孤儿文件 (${rep.orphans.length}, ${fmtSize(rep.orphans.reduce((a, o) => a + o.size, 0))})`,
+    rep.orphans.length ? '<table><tr><th>路径</th><th class="num">大小</th></tr>' +
+      rep.orphans.map(o => `<tr><td class="name">${esc(o.path)}</td><td class="num">${fmtSize(o.size)}</td></tr>`).join('')
+      + '</table>' : '<p class="muted">（无）</p>', false));
+  document.getElementById('sections').innerHTML = secs.join('');
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
