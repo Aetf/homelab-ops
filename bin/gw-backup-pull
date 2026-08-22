@@ -6,7 +6,10 @@ G=$HOME/.config/gw-config/backups
 
 rsync -rtq gw:/data/unifi/data/backup/autobackup/ "$G/unifi/" 2>/dev/null
 # alice is the adguardhome-sync origin (source of truth); bob's yaml is
-# sync-derived but cheap to keep for whole-instance restores.
+# sync-derived but cheap to keep for whole-instance restores. rsync does not
+# create the destination directory for a single-file transfer, and under
+# `set -e` + muted stderr a missing one kills the script silently.
+mkdir -p "$G/adguard-alice" "$G/adguard-bob"
 rsync -tq gw:/data/adguard-alice/AdGuardHome.yaml \
     "$G/adguard-alice/AdGuardHome.yaml" 2>/dev/null
 rsync -tq gw:/data/adguard-bob/AdGuardHome.yaml \
