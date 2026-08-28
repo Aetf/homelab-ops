@@ -71,11 +71,32 @@ def test_existing_tags_veto_autotag():
 def test_referenced_and_partial():
     ref = mk_torrent([mk_file("/d/a.mkv", 2), mk_file("/d/b.mkv", 2)])
     assert cls(ref).status is Status.REFERENCED
-    part = mk_torrent([mk_file("/d/a.mkv", 2), mk_file("/d/b.mkv", 1, size=7)])
+    # deleted file is main-video-sized: genuine partial, human adjudication
+    part = mk_torrent([mk_file("/d/a.mkv", 2), mk_file("/d/b.mkv", 1, size=900)])
     v = cls(part)
     assert v.status is Status.PARTIAL
-    assert v.media_unref == 1 and v.unref_bytes == 7
+    assert v.media_unref == 1 and v.unref_bytes == 900
     assert not wants_autotag(part, v)
+
+
+def test_trimmed_extras_not_partial():
+    # only minor extras deleted (sample/NCOP): no adjudication needed
+    t = mk_torrent([mk_file("/d/movie.mkv", 2, size=10000),
+                    mk_file("/d/sample.mkv", 1, size=80),
+                    mk_file("/d/ncop.mkv", 1, size=300)])
+    v = cls(t)
+    assert v.status is Status.TRIMMED
+    assert v.media_unref == 2 and v.unref_bytes == 380
+    assert not wants_autotag(t, v)
+    # one episode-sized deletion among the extras flips it back to PARTIAL
+    t2 = mk_torrent([mk_file("/d/ep1.mkv", 2, size=1000),
+                     mk_file("/d/ep2.mkv", 1, size=1000),
+                     mk_file("/d/ncop.mkv", 1, size=100)])
+    assert cls(t2).status is Status.PARTIAL
+    # threshold is relative to the largest *referenced* file
+    t3 = mk_torrent([mk_file("/d/small.mkv", 2, size=100),
+                     mk_file("/d/big.mkv", 1, size=100)])
+    assert cls(t3).status is Status.PARTIAL
 
 
 def test_unselected_and_nonmedia_files_ignored():

@@ -155,7 +155,8 @@ async def reconcile(qb: QBClient, cfg: Config, auditor: Auditor) -> Report:
     torrents = await gather_torrents(qb, cfg)
     verdicts = {
         t.hash: classify(t, managed=cfg.managed_categories, now=now,
-                         grace_hours=cfg.grace_hours)
+                         grace_hours=cfg.grace_hours,
+                         extras_fraction=cfg.extras_fraction)
         for t in torrents
     }
     report = Report(generated_at=now, dry_run=cfg.dry_run)

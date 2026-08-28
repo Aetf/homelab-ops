@@ -33,6 +33,7 @@ class Status(Enum):
     MISSING = "missing"          # media file absent on disk: anomaly, report only
     NO_MEDIA = "no_media"        # managed category but no media files (archives etc.)
     REFERENCED = "referenced"    # all media files still linked from Media
+    TRIMMED = "trimmed"          # main video kept, only minor extras deleted: fine
     PARTIAL = "partial"          # some deleted, some kept: human adjudication
     UNREFERENCED = "unreferenced"  # Media dropped everything: auto-tag candidate
 
@@ -69,7 +70,8 @@ class Verdict:
     unref_bytes: int = 0
 
 
-def classify(t: Torrent, *, managed: frozenset[str], now: float, grace_hours: float) -> Verdict:
+def classify(t: Torrent, *, managed: frozenset[str], now: float, grace_hours: float,
+             extras_fraction: float = 0.5) -> Verdict:
     if t.amount_left > 0 or t.completion_on <= 0:
         return Verdict(Status.INCOMPLETE)
     if t.category not in managed:
@@ -82,17 +84,26 @@ def classify(t: Torrent, *, managed: frozenset[str], now: float, grace_hours: fl
     if any(f.nlink is None for f in media):
         return Verdict(Status.MISSING, media_total=len(media))
     unref = [f for f in media if f.nlink == 1]
-    verdict = Verdict(
-        status=(
-            Status.REFERENCED if not unref
-            else Status.UNREFERENCED if len(unref) == len(media)
-            else Status.PARTIAL
-        ),
+    if not unref:
+        status = Status.REFERENCED
+    elif len(unref) == len(media):
+        status = Status.UNREFERENCED
+    else:
+        # Library curation routinely drops a torrent's extras (samples,
+        # NCOP/NCED, PVs) while keeping the main video. An unreferenced
+        # file no bigger than extras_fraction of the largest referenced
+        # media file is such an extra; if every unreferenced file
+        # qualifies, nothing adjudication-worthy was deleted. Anything
+        # main-video-sized gone (e.g. individual episodes) stays PARTIAL.
+        threshold = extras_fraction * max(f.size for f in media if f.nlink != 1)
+        status = (Status.TRIMMED if all(f.size <= threshold for f in unref)
+                  else Status.PARTIAL)
+    return Verdict(
+        status=status,
         media_total=len(media),
         media_unref=len(unref),
         unref_bytes=sum(f.size for f in unref),
     )
-    return verdict
 
 
 def wants_autotag(t: Torrent, v: Verdict) -> bool:

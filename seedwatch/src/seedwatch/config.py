@@ -30,6 +30,11 @@ class Config:
     # Wait this long after completion before trusting nlink==1: covers the
     # window where move.sh has not run yet (or failed).
     grace_hours: float = 24.0
+    # A deleted media file counts as a minor "extra" (sample, NCOP/NCED,
+    # PV) when its size <= this fraction of the largest still-referenced
+    # media file; a torrent whose deletions are all extras is TRIMMED,
+    # not PARTIAL, and needs no human adjudication.
+    extras_fraction: float = 0.5
     scan_interval_minutes: float = 60.0
     dry_run: bool = True
     default_ratio: float = 4.0
@@ -67,6 +72,7 @@ def load_config() -> Config:
             scan.get("managed_categories", sorted(Config.managed_categories))
         ),
         grace_hours=float(scan.get("grace_hours", Config.grace_hours)),
+        extras_fraction=float(scan.get("extras_fraction", Config.extras_fraction)),
         scan_interval_minutes=float(
             scan.get("interval_minutes", Config.scan_interval_minutes)
         ),
