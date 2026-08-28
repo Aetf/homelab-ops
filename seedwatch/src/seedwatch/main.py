@@ -85,12 +85,29 @@ async def rescan() -> dict:
 VALID_TAGS = {TAG_TODELETE, TAG_KEEP}
 
 
+def _patch_report_tags(torrent_hash: str, tag: str, *, add: bool) -> None:
+    """Reflect a tag change in the cached report immediately.
+
+    Tagging must not trigger a rescan: a full pass stats the whole
+    Downloads tree for minutes, which blocks adjudicating the next
+    torrent. The next periodic scan re-derives ground truth anyway.
+    """
+    rep = state["report"]
+    if not rep:
+        return
+    for row in rep["torrents"]:
+        if row["hash"] == torrent_hash:
+            tags = set(row["tags"])
+            (tags.add if add else tags.discard)(tag)
+            row["tags"] = sorted(tags)
+
+
 @app.post("/api/torrents/{torrent_hash}/tags/{tag}")
 async def add_tag(torrent_hash: str, tag: str) -> dict:
     if tag not in VALID_TAGS:
         raise HTTPException(400, f"tag must be one of {sorted(VALID_TAGS)}")
     await app.state.qb.add_tags(torrent_hash, tag)
-    wakeup.set()
+    _patch_report_tags(torrent_hash, tag, add=True)
     return {"ok": True}
 
 
@@ -99,7 +116,7 @@ async def remove_tag(torrent_hash: str, tag: str) -> dict:
     if tag not in VALID_TAGS:
         raise HTTPException(400, f"tag must be one of {sorted(VALID_TAGS)}")
     await app.state.qb.remove_tags(torrent_hash, tag)
-    wakeup.set()
+    _patch_report_tags(torrent_hash, tag, add=False)
     return {"ok": True}
 
 

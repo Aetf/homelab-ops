@@ -91,7 +91,10 @@ def _scan_orphans(downloads: Path, claimed: set[str]) -> list[dict[str, Any]]:
     for root, _dirs, names in os.walk(downloads):
         for name in names:
             p = os.path.join(root, name)
-            if p in claimed or p == str(downloads / "move.sh"):
+            # In-progress downloads carry qBittorrent's .!qB suffix on
+            # disk while the torrent claims the final name.
+            final = p.removesuffix(".!qB")
+            if final in claimed or p == str(downloads / "move.sh"):
                 continue
             try:
                 size = os.lstat(p).st_size

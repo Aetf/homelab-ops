@@ -31,6 +31,11 @@
   button:hover { background: light-dark(#f0f2f4, #2a2f37); }
   .summary span { margin-right: 1.2rem; }
   details > summary { cursor: pointer; margin: 1.6rem 0 .4rem; font-weight: 600; }
+  input[type=search] { font: inherit; padding: .1rem .5rem; border-radius: 4px;
+    border: 1px solid light-dark(#c8cdd3, #3d434b);
+    background: light-dark(#fff, #1e2228); color: inherit; min-width: 16rem; }
+  th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable:hover { color: light-dark(#1c1e21, #d8dade); }
 </style>
 </head>
 <body>
@@ -38,20 +43,30 @@
 <div id="banners"></div>
 <p class="summary" id="summary"></p>
 <p><button onclick="rescan()">重新扫描</button>
+   <input id="filter" type="search" placeholder="过滤名称 / 分类…" oninput="ui.filter=this.value.toLowerCase();render()">
    <span class="muted" id="generated"></span></p>
 <div id="sections"></div>
 <script>
 const fmtSize = n => { for (const u of ['B','K','M','G','T']) { if (Math.abs(n) < 1024) return n.toFixed(1)+u; n /= 1024; } return n.toFixed(1)+'P'; };
 const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+// filter is a substring match on 名称/分类; sort[tableKey] = {col, desc}
+const ui = { filter: '', sort: {} };
+
 async function api(method, path) {
   const r = await fetch(path, {method});
   if (!r.ok) alert(`${method} ${path}: ${r.status}`);
-  setTimeout(load, 800);
+  load();  // tag changes are reflected in the server report immediately
 }
 const rescan = () => api('POST', '/api/rescan');
 const tag = (h, t) => api('POST', `/api/torrents/${h}/tags/${t}`);
 const untag = (h, t) => api('DELETE', `/api/torrents/${h}/tags/${t}`);
+
+function sortBy(key, col) {
+  const s = ui.sort[key];
+  ui.sort[key] = { col, desc: s && s.col === col ? !s.desc : true };
+  render();
+}
 
 function tagChips(t) {
   return t.tags.map(x => `<span class="tag ${esc(x)}">${esc(x)}${
@@ -65,23 +80,50 @@ function actionBtns(t) {
   if (!t.tags.includes('Keep')) b += `<button onclick="tag('${t.hash}','Keep')">Keep</button>`;
   return b;
 }
-function torrentTable(rows, extraCols = []) {
+// extraCols entries: [label, renderFn, sortAccessor?]
+function torrentTable(key, rows, extraCols = []) {
+  rows = rows.filter(t => !ui.filter
+    || t.name.toLowerCase().includes(ui.filter) || t.category.toLowerCase().includes(ui.filter));
   if (!rows.length) return '<p class="muted">（无）</p>';
-  const head = ['分类', '名称', '大小', 'ratio / 目标', ...extraCols.map(c => c[0]), '标签', '操作'];
-  return `<table><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr>` + rows.map(t => `
-    <tr><td>${esc(t.category)}</td><td class="name">${esc(t.name)}</td>
-    <td class="num">${fmtSize(t.size)}</td>
-    <td class="num">${t.ratio.toFixed(2)} / ${t.ratio_target}</td>
-    ${extraCols.map(c => `<td>${c[1](t)}</td>`).join('')}
-    <td>${tagChips(t)}</td><td>${actionBtns(t)}</td></tr>`).join('') + '</table>';
+  const cols = [
+    ['分类', t => `<td>${esc(t.category)}</td>`, t => t.category],
+    ['名称', t => `<td class="name">${esc(t.name)}</td>`, t => t.name],
+    ['大小', t => `<td class="num">${fmtSize(t.size)}</td>`, t => t.size],
+    ['ratio / 目标', t => `<td class="num">${t.ratio.toFixed(2)} / ${t.ratio_target}</td>`, t => t.ratio],
+    ...extraCols.map(c => [c[0], t => `<td>${c[1](t)}</td>`, c[2]]),
+    ['标签', t => `<td>${tagChips(t)}</td>`],
+    ['操作', t => `<td>${actionBtns(t)}</td>`],
+  ];
+  const s = ui.sort[key];
+  if (s) {
+    const acc = (cols.find(c => c[0] === s.col) || [])[2];
+    if (acc) rows = [...rows].sort((a, b) => {
+      const x = acc(a), y = acc(b);
+      return (typeof x === 'string' ? x.localeCompare(y) : x - y) * (s.desc ? -1 : 1);
+    });
+  }
+  const head = cols.map(c => c[2]
+    ? `<th class="sortable" onclick="sortBy('${key}','${c[0]}')">${c[0]}${
+        s && s.col === c[0] ? (s.desc ? ' ▼' : ' ▲') : ''}</th>`
+    : `<th>${c[0]}</th>`).join('');
+  return `<table><tr>${head}</tr>` +
+    rows.map(t => `<tr>${cols.map(c => c[1](t)).join('')}</tr>`).join('') + '</table>';
 }
 function section(title, html, open = true) {
   return open ? `<h2>${title}</h2>${html}`
               : `<details><summary>${title}</summary>${html}</details>`;
 }
 
+let lastData = null;
+
 async function load() {
-  const data = await (await fetch('/api/report')).json();
+  lastData = await (await fetch('/api/report')).json();
+  render();
+}
+
+function render() {
+  const data = lastData;
+  if (!data) return;
   document.getElementById('scanning').textContent = data.scanning ? '（扫描中…）' : '';
   const banners = [];
   if (data.dry_run) banners.push('<div class="banner dry">dry-run 模式：只报告、打标和删除都不会真正执行。确认无误后在配置里关闭。</div>');
@@ -105,11 +147,11 @@ async function load() {
 
   const secs = [];
   secs.push(section(`① 部分引用 — 需人工裁决 (${partial.length})`,
-    torrentTable(partial, [['引用', t => `${t.media_total - t.media_unref}/${t.media_total} 保留，可释放 ${fmtSize(t.unref_bytes)}`]])));
+    torrentTable('partial', partial, [['引用', t => `${t.media_total - t.media_unref}/${t.media_total} 保留，可释放 ${fmtSize(t.unref_bytes)}`, t => t.unref_bytes]])));
   secs.push(section(`② Media 已全删（自动打标范围）(${unref.length})`,
-    torrentTable(unref)));
+    torrentTable('unref', unref)));
   secs.push(section(`③ 待收割队列 — ToDelete 等 ratio 达标 (${waiting.length})`,
-    torrentTable(waiting, [['做种天数', t => t.seeding_days], ['tracker', t => esc(t.tracker)]])));
+    torrentTable('waiting', waiting, [['做种天数', t => t.seeding_days, t => t.seeding_days], ['tracker', t => esc(t.tracker), t => t.tracker]])));
   secs.push(section(`④ 本轮动作 (${rep.actions_taken.length})`,
     rep.actions_taken.length ? '<table><tr><th>动作</th><th>名称</th><th>ratio</th><th>详情</th></tr>' +
       rep.actions_taken.map(a => `<tr><td>${a.action}${a.dry_run ? ' (dry-run)' : ''}</td>
@@ -117,13 +159,16 @@ async function load() {
         <td>${a.action === 'reap' ? (a.delete_files ? '删文件' : '仅删条目，文件由 ' + esc((a.shared_with || []).join(', ')) + ' 保留') : ''}</td></tr>`).join('')
       + '</table>' : '<p class="muted">（无）</p>'));
   secs.push(section(`⑤ 异常 — 文件缺失 / 无媒体文件 (${anomaly.length})`,
-    torrentTable(anomaly, [['状态', t => t.status]]), anomaly.length > 0));
+    torrentTable('anomaly', anomaly, [['状态', t => t.status, t => t.status]]), anomaly.length > 0));
   secs.push(section(`⑥ cross-seed 组 (${rep.cross_seed.length})`,
     rep.cross_seed.length ? '<ul>' + rep.cross_seed.map(g => `<li>${g.map(esc).join(' ⇄ ')}</li>`).join('') + '</ul>'
       : '<p class="muted">（无）</p>', false));
+  const orphans = rep.orphans
+    .filter(o => !ui.filter || o.path.toLowerCase().includes(ui.filter))
+    .sort((a, b) => b.size - a.size);
   secs.push(section(`⑦ 孤儿文件 (${rep.orphans.length}, ${fmtSize(rep.orphans.reduce((a, o) => a + o.size, 0))})`,
-    rep.orphans.length ? '<table><tr><th>路径</th><th class="num">大小</th></tr>' +
-      rep.orphans.map(o => `<tr><td class="name">${esc(o.path)}</td><td class="num">${fmtSize(o.size)}</td></tr>`).join('')
+    orphans.length ? '<table><tr><th>路径</th><th class="num">大小</th></tr>' +
+      orphans.map(o => `<tr><td class="name">${esc(o.path)}</td><td class="num">${fmtSize(o.size)}</td></tr>`).join('')
       + '</table>' : '<p class="muted">（无）</p>', false));
   document.getElementById('sections').innerHTML = secs.join('');
 }
