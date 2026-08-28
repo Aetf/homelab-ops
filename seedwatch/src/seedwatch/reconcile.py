@@ -86,15 +86,18 @@ async def gather_torrents(qb: QBClient, cfg: Config) -> list[Torrent]:
     return torrents
 
 
-def _scan_orphans(downloads: Path, claimed: set[str]) -> list[dict[str, Any]]:
+def _scan_orphans(downloads: Path, claimed: set[str],
+                  live_hashes: set[str]) -> list[dict[str, Any]]:
+    # qBittorrent's on-disk artifacts for a live torrent's in-progress
+    # data: <name>.!qB while downloading, .<infohash>.parts for
+    # partially-downloaded pieces of unselected/unfinished files.
+    parts = {f".{h}.parts" for h in live_hashes}
     orphans = []
     for root, _dirs, names in os.walk(downloads):
         for name in names:
             p = os.path.join(root, name)
-            # In-progress downloads carry qBittorrent's .!qB suffix on
-            # disk while the torrent claims the final name.
             final = p.removesuffix(".!qB")
-            if final in claimed or p == str(downloads / "move.sh"):
+            if final in claimed or name in parts or p == str(downloads / "move.sh"):
                 continue
             try:
                 size = os.lstat(p).st_size
@@ -198,6 +201,8 @@ async def reconcile(qb: QBClient, cfg: Config, auditor: Auditor) -> Report:
     report.torrents = [_torrent_row(t, verdicts[t.hash], cfg) for t in remaining]
     report.cross_seed = [g.names for g in cross_seed_groups(remaining)]
     claimed = {f.path for t in remaining for f in t.files}
-    report.orphans = await asyncio.to_thread(_scan_orphans, cfg.downloads, claimed)
+    live_hashes = {t.hash for t in remaining}
+    report.orphans = await asyncio.to_thread(
+        _scan_orphans, cfg.downloads, claimed, live_hashes)
     report.actions_taken = actions
     return report
