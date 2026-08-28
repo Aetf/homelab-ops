@@ -5,74 +5,107 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>seedwatch</title>
 <style>
-  :root { color-scheme: light dark; }
-  body {
-    font: 14px/1.5 system-ui, sans-serif; margin: 1.5rem auto; max-width: 72rem;
-    padding: 0 1rem;
-    background: light-dark(#fafafa, #14161a); color: light-dark(#1c1e21, #d8dade);
+  :root {
+    color-scheme: light dark;
+    /* categorical series (validated palette, light/dark stepped) */
+    --s1: light-dark(#2a78d6, #3987e5); --s2: light-dark(#eb6834, #d95926);
+    --s3: light-dark(#1baf7a, #199e70); --s4: light-dark(#eda100, #c98500);
+    --s5: light-dark(#e87ba4, #d55181); --sother: #898781;
+    --page: light-dark(#f6f6f4, #101214);
+    --surface: light-dark(#ffffff, #191d22);   /* card bg = chart gap color */
+    --line: light-dark(#e7e7e3, #262b31);
+    --grid: light-dark(#ececea, #262b31);
+    --ink: light-dark(#1c1e21, #d8dade);
+    --muted: light-dark(#68707a, #8b949e);
   }
-  h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin: 1.6rem 0 .4rem; }
-  .muted { color: light-dark(#68707a, #8b949e); }
-  .banner { padding: .5rem .8rem; border-radius: 6px; margin: .6rem 0; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 88rem;
+         padding: 1.2rem 1.4rem 3rem; background: var(--page); color: var(--ink); }
+  h1 { font-size: 1.25rem; margin: 0; }
+  h2 { font-size: .95rem; margin: 0 0 .6rem; letter-spacing: .01em; }
+  .muted { color: var(--muted); }
+  .hdr { display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .hdr .grow { flex: 1; }
+  .banner { padding: .5rem .8rem; border-radius: 8px; margin: .6rem 0; }
   .dry { background: light-dark(#fff3cd, #3a3320); }
   .err { background: light-dark(#f8d7da, #40272a); }
+
+  .card { background: var(--surface); border: 1px solid var(--line);
+          border-radius: 10px; padding: .9rem 1.1rem; margin: 0 0 1rem; }
+  details.card > summary { cursor: pointer; font-weight: 600; font-size: .95rem; }
+  details.card[open] > summary { margin-bottom: .6rem; }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+          gap: .8rem; margin-bottom: 1rem; }
+  .tile { background: var(--surface); border: 1px solid var(--line);
+          border-radius: 10px; padding: .55rem .9rem .6rem; }
+  .tile .v { font-size: 1.45rem; font-weight: 650; line-height: 1.25; }
+  .tile .l { font-size: .78rem; color: var(--muted); }
+  .tile .s { font-size: .78rem; color: var(--muted); }
+
+  .grid2 { display: grid; grid-template-columns: 3fr 2fr; gap: 1rem; align-items: start; }
+  @media (max-width: 64rem) { .grid2 { grid-template-columns: 1fr; } }
+
+  .bar { display: flex; gap: 2px; height: 16px; border-radius: 5px; overflow: hidden; margin: .3rem 0 .5rem; }
+  .bar div { min-width: 3px; }
+
   table { border-collapse: collapse; width: 100%; }
-  th, td { text-align: left; padding: .28rem .5rem; border-bottom: 1px solid light-dark(#e3e5e8, #2a2e34); }
+  th, td { text-align: left; padding: .28rem .5rem; border-bottom: 1px solid var(--grid); }
+  tr:last-child td { border-bottom: none; }
   th { font-weight: 600; color: light-dark(#454b52, #a8b0b8); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .name { max-width: 32rem; overflow-wrap: anywhere; }
+  .name { max-width: 34rem; overflow-wrap: anywhere; }
+  th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable:hover { color: var(--ink); }
+
   .tag { display: inline-block; padding: 0 .4rem; border-radius: 4px; font-size: .8rem;
          background: light-dark(#e7ebf0, #2c313a); margin-right: .25rem; }
   .tag.ToDelete { background: light-dark(#fde2e1, #46262b); }
   .tag.Keep { background: light-dark(#dcefdc, #24382a); }
   .tag.Trimmed { background: light-dark(#dceef0, #1f3538); }
-  button { font: inherit; font-size: .8rem; padding: .1rem .5rem; border-radius: 4px;
+  button { font: inherit; font-size: .8rem; padding: .12rem .55rem; border-radius: 5px;
            border: 1px solid light-dark(#c8cdd3, #3d434b);
-           background: light-dark(#fff, #1e2228); color: inherit; cursor: pointer; }
+           background: var(--surface); color: inherit; cursor: pointer; }
   button:hover { background: light-dark(#f0f2f4, #2a2f37); }
-  .summary span { margin-right: 1.2rem; }
-  details > summary { cursor: pointer; margin: 1.6rem 0 .4rem; font-weight: 600; }
-  input[type=search] { font: inherit; padding: .1rem .5rem; border-radius: 4px;
+  .toggle button[aria-pressed="true"] { background: light-dark(#e7ebf0, #2c313a); font-weight: 600; }
+  input[type=search] { font: inherit; padding: .12rem .55rem; border-radius: 5px;
     border: 1px solid light-dark(#c8cdd3, #3d434b);
-    background: light-dark(#fff, #1e2228); color: inherit; min-width: 16rem; }
-  th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
-  th.sortable:hover { color: light-dark(#1c1e21, #d8dade); }
-  /* categorical series (validated palette, light/dark stepped) */
-  :root { --s1: light-dark(#2a78d6, #3987e5); --s2: light-dark(#eb6834, #d95926);
-          --s3: light-dark(#1baf7a, #199e70); --s4: light-dark(#eda100, #c98500);
-          --s5: light-dark(#e87ba4, #d55181); --sother: #898781;
-          --surface: light-dark(#fafafa, #14161a);
-          --grid: light-dark(#e3e5e8, #2a2e34); --muted: #898781; }
-  .chartrow { display: flex; gap: 2rem; flex-wrap: wrap; align-items: flex-start; }
-  .chartrow table { width: auto; }
-  .legend { margin: .4rem 0; }
-  .legend span.lg { margin-right: 1.1rem; white-space: nowrap; }
+    background: var(--surface); color: inherit; min-width: 15rem; }
+
+  .legend { margin: .2rem 0 0; font-size: .82rem; }
+  .legend span.lg { margin-right: 1rem; white-space: nowrap; }
   .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
         margin-right: .35rem; vertical-align: baseline; }
-  .toggle button[aria-pressed="true"] { background: light-dark(#e7ebf0, #2c313a); font-weight: 600; }
+  .chartrow { display: flex; gap: 1.4rem; flex-wrap: wrap; align-items: flex-start; }
+  .chartrow table { width: auto; }
   #tip { position: fixed; pointer-events: none; z-index: 10; font-size: .8rem;
-         background: light-dark(#fff, #1e2228); border: 1px solid light-dark(#c8cdd3, #3d434b);
+         background: var(--surface); border: 1px solid light-dark(#c8cdd3, #3d434b);
          border-radius: 6px; padding: .35rem .6rem; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
   svg text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
-<h1>seedwatch <span id="scanning" class="muted"></span></h1>
+<div class="hdr">
+  <h1>seedwatch</h1>
+  <span id="scanning" class="muted"></span>
+  <span class="grow"></span>
+  <span class="toggle" id="metricToggle"></span>
+  <input id="filter" type="search" placeholder="过滤名称 / 分类…"
+         oninput="ui.filter=this.value.toLowerCase();render()">
+  <button onclick="rescan()">重新扫描</button>
+</div>
 <div id="banners"></div>
-<p class="summary" id="summary"></p>
-<p><button onclick="rescan()">重新扫描</button>
-   <input id="filter" type="search" placeholder="过滤名称 / 分类…" oninput="ui.filter=this.value.toLowerCase();render()">
-   <span class="muted" id="generated"></span></p>
+<div id="kpis" class="kpis"></div>
 <div id="charts"></div>
 <div id="sections"></div>
+<p class="muted" id="generated"></p>
 <div id="tip" hidden></div>
 <script>
 const fmtSize = n => { for (const u of ['B','K','M','G','T']) { if (Math.abs(n) < 1024) return n.toFixed(1)+u; n /= 1024; } return n.toFixed(1)+'P'; };
 const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-// filter is a substring match on 名称/分类; sort[tableKey] = {col, desc};
-// metric: 0 = bytes, 1 = torrent count (charts only)
-const ui = { filter: '', sort: {}, metric: 0 };
+// filter: substring match on 名称/分类; sort[tableKey] = {col, desc};
+// metric: 0 = bytes, 1 = torrent count (charts); trendBy: 0 = 状态, 1 = 分类
+const ui = { filter: '', sort: {}, metric: 0, trendBy: 0 };
 
 async function api(method, path) {
   const r = await fetch(path, {method});
@@ -133,8 +166,8 @@ function torrentTable(key, rows, extraCols = []) {
     rows.map(t => `<tr>${cols.map(c => c[1](t)).join('')}</tr>`).join('') + '</table>';
 }
 function section(title, html, open = true) {
-  return open ? `<h2>${title}</h2>${html}`
-              : `<details><summary>${title}</summary>${html}</details>`;
+  return open ? `<section class="card"><h2>${title}</h2>${html}</section>`
+              : `<details class="card"><summary>${title}</summary>${html}</details>`;
 }
 
 let lastData = null;
@@ -146,15 +179,35 @@ async function load() {
   render();
 }
 
-// ---- category charts (pie = current share, stacked area = trend) ----
+// ---- lifecycle buckets (the primary story) ----
+// Stack/legend order is also the color-adjacency order and follows the
+// validated palette sequence (blue, orange, aqua, yellow, then neutral
+// gray) — do not reorder without re-running the palette validator.
+const BUCKETS = [
+  ['media',     '在媒体库', 'var(--s1)'],
+  ['todelete',  '待收割',   'var(--s2)'],
+  ['other',     '其他',     'var(--s3)'],
+  ['partial',   '待裁决',   'var(--s4)'],
+  ['unmanaged', '未管理',   'var(--sother)'],
+];
+// mirrors seedwatch.scan.lifecycle_bucket
+function bucketOf(t) {
+  if (t.tags.includes('ToDelete') && !t.tags.includes('Keep')) return 'todelete';
+  if (t.status === 'referenced' || t.status === 'trimmed') return 'media';
+  if (t.status === 'partial') return 'partial';
+  if (t.status === 'unmanaged') return 'unmanaged';
+  return 'other';
+}
+
+// ---- categories (secondary) ----
 // Fixed slot order so colors follow the category across time and filters;
-// everything else folds into 其他 (gray). Edit here if the library's big
-// categories ever change.
+// the rest folds into 其他 (gray). Edit if the big categories change.
 const CAT_ORDER = ['Mov', '电影', '剧集', '动漫', 'Anim'];
 const NC = CAT_ORDER.length;
 const SER = ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)', 'var(--s5)', 'var(--sother)'];
 const catName = i => i < NC ? CAT_ORDER[i] : '其他';
 const slotOf = c => { const i = CAT_ORDER.indexOf(c); return i < 0 ? NC : i; };
+
 const mval = o => ui.metric ? o[1] : o[0];          // o = [size, count]
 const mfmt = v => ui.metric ? String(v) : fmtSize(v);
 let pieData = null, trendMeta = null;
@@ -168,21 +221,70 @@ function showTip(ev, html) {
 }
 function hideTip() { tipEl().hidden = true; }
 
+function legendHtml(items) {  // items: [name, color, [size,count]]
+  return '<p class="legend">' + items.map(([n, c, v]) => mval(v)
+    ? `<span class="lg"><span class="sw" style="background:${c}"></span>${n} ${mfmt(mval(v))}</span>`
+    : '').join('') + '</p>';
+}
+
+// ---- KPI tiles ----
+function kpisHtml(rep, reaped) {
+  const agg = Object.fromEntries(BUCKETS.map(b => [b[0], [0, 0]]));
+  let freeable = 0;
+  for (const t of rep.torrents) {
+    const a = agg[bucketOf(t)];
+    a[0] += t.size; a[1]++;
+    if (t.status === 'partial') freeable += t.unref_bytes;
+  }
+  const total = rep.torrents.reduce((a, t) => a + t.size, 0);
+  const tile = (v, l, s) =>
+    `<div class="tile"><div class="v">${v}</div><div class="l">${l}</div><div class="s">${s}</div></div>`;
+  return {
+    html:
+      tile(fmtSize(total), '总做种', `${rep.torrents.length} 个 torrent`) +
+      tile(fmtSize(agg.media[0]), '在媒体库', `${agg.media[1]} 个仍被引用`) +
+      tile(fmtSize(agg.todelete[0]), '待收割 ToDelete', `${agg.todelete[1]} 个等 ratio 达标`) +
+      tile(String(agg.partial[1]), '待裁决', `可释放 ${fmtSize(freeable)}`) +
+      tile(fmtSize(reaped.bytes), '已删除（累计）', `${reaped.count} 次收割`),
+    agg,
+  };
+}
+
+// ---- composition bar ----
+function bucketTip(ev, i) {
+  const [, name, color] = BUCKETS[i];
+  const v = pieData.bar[i], total = pieData.barTotal;
+  showTip(ev, `<span class="sw" style="background:${color}"></span>${name}：${
+    mfmt(mval(v))} (${(100 * mval(v) / total).toFixed(1)}%)`);
+}
+function compositionHtml(rep, agg) {
+  const bar = BUCKETS.map(b => agg[b[0]]);
+  const barTotal = bar.reduce((a, v) => a + mval(v), 0) || 1;
+  pieData = { ...(pieData || {}), bar, barTotal };
+  const segs = bar.map((v, i) => mval(v)
+    ? `<div style="background:${BUCKETS[i][2]};flex:${mval(v) / barTotal}"
+        onmousemove="bucketTip(event,${i})" onmouseleave="hideTip()"></div>` : '').join('');
+  const counts = {};
+  for (const t of rep.torrents) counts[t.status] = (counts[t.status] || 0) + 1;
+  const detail = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(' · ');
+  return `<section class="card"><h2>生命周期构成</h2>
+    <div class="bar">${segs}</div>
+    ${legendHtml(BUCKETS.map((b, i) => [b[1], b[2], bar[i]]))}
+    <p class="legend muted">${detail}</p></section>`;
+}
+
+// ---- category pie + table ----
 function pieTip(ev, i) {
   const v = pieData.slots[i], total = pieData.total;
   showTip(ev, `<span class="sw" style="background:${SER[i]}"></span>${catName(i)}：${
     mfmt(mval(v))} (${(100 * mval(v) / total).toFixed(1)}%)`);
 }
-
 function arcPath(cx, cy, r, a0, a1) {
   a1 = Math.min(a1, a0 + Math.PI * 2 - 1e-3);
   const px = a => (cx + r * Math.sin(a)).toFixed(1), py = a => (cy - r * Math.cos(a)).toFixed(1);
   return `M${cx},${cy} L${px(a0)},${py(a0)} A${r},${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${px(a1)},${py(a1)} Z`;
 }
-
-function chartsHtml(rep) {
-  // aggregate the snapshot: fixed slots for the charts + full per-category
-  // rows for the table view
+function categoryCard(rep) {
   const slots = Array.from({length: NC + 1}, () => [0, 0]);
   const full = {};
   for (const t of rep.torrents) {
@@ -190,147 +292,158 @@ function chartsHtml(rep) {
     s[0] += t.size; s[1]++; f[0] += t.size; f[1]++;
   }
   const total = slots.reduce((a, s) => a + mval(s), 0) || 1;
-  pieData = { slots, total };
-
+  pieData = { ...(pieData || {}), slots, total };
   let a = 0;
   const slices = slots.map((s, i) => {
     const v = mval(s); if (!v) return '';
     const a0 = a; a += v / total * Math.PI * 2;
-    return `<path d="${arcPath(100, 100, 88, a0, a)}" fill="${SER[i]}"
+    return `<path d="${arcPath(80, 80, 72, a0, a)}" fill="${SER[i]}"
       stroke="var(--surface)" stroke-width="2"
       onmousemove="pieTip(event,${i})" onmouseleave="hideTip()"/>`;
   }).join('');
-  const pie = `<svg width="200" height="200" role="img" aria-label="分类占比饼图">${slices}</svg>`;
-
   const catTable = '<table><tr><th>分类</th><th class="num">大小</th><th class="num">数量</th><th class="num">占比</th></tr>' +
     Object.entries(full).sort((x, y) => mval(y[1]) - mval(x[1])).map(([c, v]) => `
       <tr><td><span class="sw" style="background:${SER[slotOf(c === '未分类' ? '' : c)]}"></span>${esc(c)}</td>
       <td class="num">${fmtSize(v[0])}</td><td class="num">${v[1]}</td>
       <td class="num">${(100 * mval(v) / total).toFixed(1)}%</td></tr>`).join('') + '</table>';
-
-  const legend = '<p class="legend">' + slots.map((s, i) => mval(s)
-    ? `<span class="lg"><span class="sw" style="background:${SER[i]}"></span>${catName(i)} ${mfmt(mval(s))}</span>`
-    : '').join('') + '</p>';
-
-  const toggle = `<span class="toggle">
-    <button aria-pressed="${!ui.metric}" onclick="ui.metric=0;render()">空间</button>
-    <button aria-pressed="${!!ui.metric}" onclick="ui.metric=1;render()">数量</button></span>`;
-
-  return `<h2>分类占比 ${toggle}</h2>${legend}
-    <div class="chartrow"><div>${pie}</div><div>${catTable}</div></div>
-    <h2>趋势</h2>${trendHtml()}`;
+  return `<section class="card"><h2>分类占比</h2>
+    <div class="chartrow">
+      <svg width="160" height="160" role="img" aria-label="分类占比饼图">${slices}</svg>
+      <div style="flex:1">${catTable}</div>
+    </div></section>`;
 }
 
+// ---- trend (stacked area over history) ----
+const TW = 720, TPT = 8, TPH = 190, TAX = 22, TPL = 56, TPR = 8;
+function trendCard() {
+  const toggle = `<span class="toggle" style="float:right">
+    <button aria-pressed="${!ui.trendBy}" onclick="ui.trendBy=0;render()">状态</button>
+    <button aria-pressed="${!!ui.trendBy}" onclick="ui.trendBy=1;render()">分类</button></span>`;
+  return `<section class="card">${toggle}<h2>趋势</h2>${trendHtml()}</section>`;
+}
 function trendHtml() {
-  if (lastHistory.length < 2)
+  // series defs [name, color] + per-entry accessor for the chosen view
+  let defs, entries, getv;
+  if (ui.trendBy === 0) {
+    defs = BUCKETS.map(b => [b[1], b[2]]);
+    entries = lastHistory.filter(e => e.status);
+    getv = (e, i) => mval(e.status[BUCKETS[i][0]] || [0, 0]);
+  } else {
+    defs = Array.from({length: NC + 1}, (_, i) => [catName(i), SER[i]]);
+    entries = lastHistory;
+    getv = (e, i) => {
+      let v = 0;
+      for (const [c, sc] of Object.entries(e.cats)) if (slotOf(c) === i) v += mval(sc);
+      return v;
+    };
+  }
+  if (entries.length < 2)
     return '<p class="muted">趋势图需要至少两轮扫描的历史（每小时一轮，正在积累）。</p>';
-  const vals = lastHistory.map(e => {
-    const v = Array(NC + 1).fill(0);
-    for (const [c, sc] of Object.entries(e.cats)) v[slotOf(c)] += mval(sc);
-    return v;
-  });
-  const W = 760, PT = 8, PH = 190, AX = 22, PL = 56, PR = 8;
-  const t0 = lastHistory[0].ts, t1 = lastHistory[lastHistory.length - 1].ts;
-  const X = ts => PL + (ts - t0) / (t1 - t0 || 1) * (W - PL - PR);
+  const vals = entries.map(e => defs.map((_, i) => getv(e, i)));
+  const t0 = entries[0].ts, t1 = entries[entries.length - 1].ts;
+  const X = ts => TPL + (ts - t0) / (t1 - t0 || 1) * (TW - TPL - TPR);
   const ymax = Math.max(...vals.map(v => v.reduce((a, b) => a + b, 0))) * 1.05 || 1;
-  const Y = v => PT + (1 - v / ymax) * (PH - PT);
-  trendMeta = { X, vals, PL, PR, W };
-
-  // cumulative stacks, slot 0 at the bottom
+  const Y = v => TPT + (1 - v / ymax) * (TPH - TPT);
+  trendMeta = { X, vals, defs, entries };
   const cum = vals.map(v => { let c = 0; return v.map(x => c += x); });
   const line = (k, rev) => {
-    const pts = lastHistory.map((e, j) => `${X(e.ts).toFixed(1)},${Y(cum[j][k]).toFixed(1)}`);
+    const pts = entries.map((e, j) => `${X(e.ts).toFixed(1)},${Y(cum[j][k]).toFixed(1)}`);
     return (rev ? pts.reverse() : pts).join(' ');
   };
   const areas = [];
-  for (let k = NC; k >= 0; k--) {
+  for (let k = defs.length - 1; k >= 0; k--) {
     const bottom = k === 0
       ? `${X(t1).toFixed(1)},${Y(0)} ${X(t0).toFixed(1)},${Y(0)}` : line(k - 1, true);
-    areas.push(`<polygon points="${line(k, false)} ${bottom}" fill="${SER[k]}"
+    areas.push(`<polygon points="${line(k, false)} ${bottom}" fill="${defs[k][1]}"
       stroke="var(--surface)" stroke-width="2"/>`);
   }
   const grid = [0.5, 1].map(f => `
-    <line x1="${PL}" y1="${Y(ymax * f)}" x2="${W - PR}" y2="${Y(ymax * f)}" stroke="var(--grid)"/>
-    <text x="${PL - 6}" y="${Y(ymax * f) + 4}" text-anchor="end">${mfmt(Math.round(ymax * f))}</text>`);
+    <line x1="${TPL}" y1="${Y(ymax * f)}" x2="${TW - TPR}" y2="${Y(ymax * f)}" stroke="var(--grid)"/>
+    <text x="${TPL - 6}" y="${Y(ymax * f) + 4}" text-anchor="end">${mfmt(Math.round(ymax * f))}</text>`);
   const xticks = [0, 0.5, 1].map(f => {
     const ts = t0 + (t1 - t0) * f;
     const anchor = f === 0 ? 'start' : f === 1 ? 'end' : 'middle';
-    return `<text x="${X(ts)}" y="${PH + AX - 6}" text-anchor="${anchor}">${
+    return `<text x="${X(ts)}" y="${TPH + TAX - 6}" text-anchor="${anchor}">${
       new Date(ts * 1000).toLocaleDateString('zh', {month: 'numeric', day: 'numeric'})}</text>`;
   });
-  return `<svg id="trend" width="${W}" height="${PH + AX}" role="img" aria-label="分类趋势图"
-      style="max-width:100%" onmousemove="trendTip(event)" onmouseleave="hideTip();trendXh(-1)">
+  return `<svg id="trend" viewBox="0 0 ${TW} ${TPH + TAX}" role="img" aria-label="趋势图"
+      style="width:100%;height:auto" onmousemove="trendTip(event)" onmouseleave="hideTip();trendXh(-1)">
     ${grid.join('')}${areas.join('')}
-    <line id="xh" y1="${PT}" y2="${PH}" stroke="var(--muted)" visibility="hidden"/>
-    <line x1="${PL}" y1="${Y(0)}" x2="${W - PR}" y2="${Y(0)}" stroke="var(--grid)"/>
-    ${xticks.join('')}</svg>`;
+    <line id="xh" y1="${TPT}" y2="${TPH}" stroke="var(--muted)" visibility="hidden"/>
+    <line x1="${TPL}" y1="${Y(0)}" x2="${TW - TPR}" y2="${Y(0)}" stroke="var(--grid)"/>
+    ${xticks.join('')}</svg>` +
+    legendHtml(trendMeta.defs.map((d, i) => [d[0], d[1],
+      [vals[vals.length - 1][i], vals[vals.length - 1][i]]]));
 }
-
 function trendXh(x) {
   const xh = document.getElementById('xh');
   if (xh) { xh.setAttribute('visibility', x < 0 ? 'hidden' : 'visible'); if (x >= 0) { xh.setAttribute('x1', x); xh.setAttribute('x2', x); } }
 }
 function trendTip(ev) {
-  const svg = document.getElementById('trend');
-  const px = (ev.clientX - svg.getBoundingClientRect().left) * (svg.width.baseVal.value / svg.getBoundingClientRect().width);
+  const svg = document.getElementById('trend'), rect = svg.getBoundingClientRect();
+  const px = (ev.clientX - rect.left) / rect.width * TW;
+  const { X, vals, defs, entries } = trendMeta;
   let best = 0, bd = Infinity;
-  lastHistory.forEach((e, j) => {
-    const d = Math.abs(trendMeta.X(e.ts) - px); if (d < bd) { bd = d; best = j; }
+  entries.forEach((e, j) => {
+    const d = Math.abs(X(e.ts) - px); if (d < bd) { bd = d; best = j; }
   });
-  trendXh(trendMeta.X(lastHistory[best].ts));
-  const v = trendMeta.vals[best];
-  showTip(ev, `<b>${new Date(lastHistory[best].ts * 1000).toLocaleString()}</b><br>` +
-    v.map((x, i) => x ? `<span class="sw" style="background:${SER[i]}"></span>${catName(i)} ${mfmt(x)}` : '')
+  trendXh(X(entries[best].ts));
+  const v = vals[best];
+  showTip(ev, `<b>${new Date(entries[best].ts * 1000).toLocaleString()}</b><br>` +
+    v.map((x, i) => x ? `<span class="sw" style="background:${defs[i][1]}"></span>${defs[i][0]} ${mfmt(x)}` : '')
       .filter(Boolean).join('<br>') + `<br>合计 ${mfmt(v.reduce((a, b) => a + b, 0))}`);
 }
 
 function render() {
   const data = lastData;
   if (!data) return;
-  document.getElementById('scanning').textContent = data.scanning ? '（扫描中…）' : '';
+  document.getElementById('scanning').textContent = data.scanning ? '扫描中…' : '';
   const banners = [];
   if (data.dry_run) banners.push('<div class="banner dry">dry-run 模式：只报告、打标和删除都不会真正执行。确认无误后在配置里关闭。</div>');
   if (data.error) banners.push(`<div class="banner err">上次扫描失败：${esc(data.error.detail)}</div>`);
   document.getElementById('banners').innerHTML = banners.join('');
+  document.getElementById('metricToggle').innerHTML = `
+    <button aria-pressed="${!ui.metric}" onclick="ui.metric=0;render()">空间</button>
+    <button aria-pressed="${!!ui.metric}" onclick="ui.metric=1;render()">数量</button>`;
   const rep = data.report;
-  if (!rep) { document.getElementById('summary').textContent = '首次扫描尚未完成…'; return; }
+  if (!rep) { document.getElementById('kpis').innerHTML = '<p class="muted">首次扫描尚未完成…</p>'; return; }
   document.getElementById('generated').textContent =
     '上次扫描: ' + new Date(rep.generated_at * 1000).toLocaleString();
-  document.getElementById('charts').innerHTML = chartsHtml(rep);
+
+  const { html: kpis, agg } = kpisHtml(rep, data.reaped || {count: 0, bytes: 0});
+  document.getElementById('kpis').innerHTML = kpis;
+  document.getElementById('charts').innerHTML =
+    compositionHtml(rep, agg) +
+    `<div class="grid2">${trendCard()}${categoryCard(rep)}</div>`;
 
   const by = s => rep.torrents.filter(t => t.status === s);
   const partial = by('partial');
   const unref = by('unreferenced');
   const anomaly = [...by('missing'), ...by('no_media')];
   const waiting = rep.torrents.filter(t => t.tags.includes('ToDelete') && !t.tags.includes('Keep'));
-  const counts = {};
-  for (const t of rep.torrents) counts[t.status] = (counts[t.status] || 0) + 1;
-  document.getElementById('summary').innerHTML =
-    `<span>共 ${rep.torrents.length} 个 torrent</span>` +
-    Object.entries(counts).map(([k, v]) => `<span>${k}: ${v}</span>`).join('');
 
   const secs = [];
-  secs.push(section(`① 部分引用 — 需人工裁决 (${partial.length})`,
+  secs.push(section(`部分引用 — 需人工裁决 (${partial.length})`,
     torrentTable('partial', partial, [['引用', t => `${t.media_total - t.media_unref}/${t.media_total} 保留，可释放 ${fmtSize(t.unref_bytes)}`, t => t.unref_bytes]])));
-  secs.push(section(`② Media 已全删（自动打标范围）(${unref.length})`,
+  secs.push(section(`Media 已全删（自动打标范围）(${unref.length})`,
     torrentTable('unref', unref)));
-  secs.push(section(`③ 待收割队列 — ToDelete 等 ratio 达标 (${waiting.length})`,
+  secs.push(section(`待收割队列 — ToDelete 等 ratio 达标 (${waiting.length})`,
     torrentTable('waiting', waiting, [['做种天数', t => t.seeding_days, t => t.seeding_days], ['tracker', t => esc(t.tracker), t => t.tracker]])));
-  secs.push(section(`④ 本轮动作 (${rep.actions_taken.length})`,
+  secs.push(section(`本轮动作 (${rep.actions_taken.length})`,
     rep.actions_taken.length ? '<table><tr><th>动作</th><th>名称</th><th>ratio</th><th>详情</th></tr>' +
       rep.actions_taken.map(a => `<tr><td>${a.action}${a.dry_run ? ' (dry-run)' : ''}</td>
         <td class="name">${esc(a.name)}</td><td class="num">${a.ratio}</td>
         <td>${a.action === 'reap' ? (a.delete_files ? '删文件' : '仅删条目，文件由 ' + esc((a.shared_with || []).join(', ')) + ' 保留') : ''}</td></tr>`).join('')
       + '</table>' : '<p class="muted">（无）</p>'));
-  secs.push(section(`⑤ 异常 — 文件缺失 / 无媒体文件 (${anomaly.length})`,
+  secs.push(section(`异常 — 文件缺失 / 无媒体文件 (${anomaly.length})`,
     torrentTable('anomaly', anomaly, [['状态', t => t.status, t => t.status]]), anomaly.length > 0));
-  secs.push(section(`⑥ cross-seed 组 (${rep.cross_seed.length})`,
+  secs.push(section(`cross-seed 组 (${rep.cross_seed.length})`,
     rep.cross_seed.length ? '<ul>' + rep.cross_seed.map(g => `<li>${g.map(esc).join(' ⇄ ')}</li>`).join('') + '</ul>'
       : '<p class="muted">（无）</p>', false));
   const orphans = rep.orphans
     .filter(o => !ui.filter || o.path.toLowerCase().includes(ui.filter))
     .sort((a, b) => b.size - a.size);
-  secs.push(section(`⑦ 孤儿文件 (${rep.orphans.length}, ${fmtSize(rep.orphans.reduce((a, o) => a + o.size, 0))})`,
+  secs.push(section(`孤儿文件 (${rep.orphans.length}, ${fmtSize(rep.orphans.reduce((a, o) => a + o.size, 0))})`,
     orphans.length ? '<table><tr><th>路径</th><th class="num">大小</th></tr>' +
       orphans.map(o => `<tr><td class="name">${esc(o.path)}</td><td class="num">${fmtSize(o.size)}</td></tr>`).join('')
       + '</table>' : '<p class="muted">（无）</p>', false));

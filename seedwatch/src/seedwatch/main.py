@@ -74,6 +74,7 @@ async def get_report() -> dict:
         "error": state["error"],
         "scanning": state["scanning"],
         "dry_run": cfg.dry_run,
+        "reaped": auditor.reaped_summary(),
     }
 
 

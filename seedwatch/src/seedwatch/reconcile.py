@@ -35,6 +35,7 @@ from .scan import (
     classify,
     cross_seed_groups,
     is_media_file,
+    lifecycle_bucket,
     plan_reaps,
     reap_eligible,
     wants_autotag,
@@ -122,6 +123,7 @@ class Auditor:
             "hash": t.hash,
             "name": t.name,
             "category": t.category,
+            "size": t.size,
             "ratio": round(t.ratio, 3),
             **extra,
         }
@@ -136,21 +138,40 @@ class Auditor:
             lines = f.readlines()[-n:]
         return [json.loads(line) for line in lines]
 
+    def reaped_summary(self) -> dict[str, int]:
+        """Cumulative real reaps: torrents removed, bytes freed.
+
+        Entries predating the size field count as 0 bytes; only
+        delete_files reaps free space (entry-only deletions leave the
+        files to a cross-seed holder).
+        """
+        count = freed = 0
+        for e in self.tail(n=1_000_000):
+            if e["action"] == "reap" and not e["dry_run"]:
+                count += 1
+                if e.get("delete_files"):
+                    freed += e.get("size", 0)
+        return {"count": count, "bytes": freed}
+
 
 class History:
     """Per-scan category totals (JSONL), the trend chart's data source.
 
     One line per reconcile pass: {"ts": ..., "cats": {category: [bytes,
-    count]}}. Hourly scans keep this small; tail() caps reads anyway.
+    count]}, "status": {lifecycle bucket: [bytes, count]}}. Entries from
+    before 2026-08-28 lack "status". Hourly scans keep this small;
+    tail() caps reads anyway.
     """
 
     def __init__(self, data_dir: Path) -> None:
         data_dir.mkdir(parents=True, exist_ok=True)
         self._path = data_dir / "history.jsonl"
 
-    def append(self, ts: float, cats: dict[str, list[int]]) -> None:
+    def append(self, ts: float, cats: dict[str, list[int]],
+               status: dict[str, list[int]]) -> None:
+        entry = {"ts": ts, "cats": cats, "status": status}
         with open(self._path, "a") as f:
-            f.write(json.dumps({"ts": ts, "cats": cats}, ensure_ascii=False) + "\n")
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def tail(self, n: int = 5000) -> list[dict[str, Any]]:
         if not self._path.is_file():
@@ -231,9 +252,13 @@ async def reconcile(qb: QBClient, cfg: Config, auditor: Auditor,
     report.actions_taken = actions
     if history is not None:
         cats: dict[str, list[int]] = {}
+        buckets: dict[str, list[int]] = {}
         for row in report.torrents:
-            c = cats.setdefault(row["category"], [0, 0])
-            c[0] += row["size"]
-            c[1] += 1
-        history.append(now, cats)
+            for agg in (cats.setdefault(row["category"], [0, 0]),
+                        buckets.setdefault(
+                            lifecycle_bucket(set(row["tags"]), row["status"]),
+                            [0, 0])):
+                agg[0] += row["size"]
+                agg[1] += 1
+        history.append(now, cats, buckets)
     return report

@@ -198,3 +198,20 @@ class Report:
 
 def is_media_file(name: str) -> bool:
     return Path(name).suffix.lower() in MEDIA_EXT
+
+
+def lifecycle_bucket(tags: frozenset[str] | set[str], status: str) -> str:
+    """Coarse lifecycle bucket for the dashboard charts.
+
+    The ToDelete tag dominates: whatever the nlink state, such a torrent
+    is queued for reaping. Statuses are the string values of Status.
+    """
+    if TAG_TODELETE in tags and TAG_KEEP not in tags:
+        return "todelete"
+    if status in ("referenced", "trimmed"):
+        return "media"
+    if status == "partial":
+        return "partial"
+    if status == "unmanaged":
+        return "unmanaged"
+    return "other"  # incomplete / grace / missing / no_media / untagged unref

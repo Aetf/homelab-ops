@@ -8,6 +8,7 @@ from seedwatch.scan import (
     Torrent,
     classify,
     cross_seed_groups,
+    lifecycle_bucket,
     plan_reaps,
     reap_eligible,
     wants_autotag,
@@ -97,6 +98,15 @@ def test_trimmed_extras_not_partial():
     t3 = mk_torrent([mk_file("/d/small.mkv", 2, size=100),
                      mk_file("/d/big.mkv", 1, size=100)])
     assert cls(t3).status is Status.PARTIAL
+
+
+def test_lifecycle_bucket():
+    assert lifecycle_bucket({"ToDelete"}, "referenced") == "todelete"
+    assert lifecycle_bucket({"ToDelete", "Keep"}, "referenced") == "media"
+    assert lifecycle_bucket(set(), "trimmed") == "media"
+    assert lifecycle_bucket(set(), "partial") == "partial"
+    assert lifecycle_bucket(set(), "unmanaged") == "unmanaged"
+    assert lifecycle_bucket(set(), "grace") == "other"
 
 
 def test_trimmed_tag_overrides_size_heuristic():
