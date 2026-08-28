@@ -31,7 +31,8 @@
 
   .card { background: var(--surface); border: 1px solid var(--line);
           border-radius: 10px; padding: .9rem 1.1rem; margin: 0 0 1rem; }
-  details.card > summary { cursor: pointer; font-weight: 600; font-size: .95rem; }
+  details.card > summary { cursor: pointer; font-weight: 600; font-size: .95rem;
+                           letter-spacing: .01em; user-select: none; }
   details.card[open] > summary { margin-bottom: .6rem; }
 
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
@@ -58,7 +59,9 @@
   th.sortable:hover { color: var(--ink); }
 
   .tag { display: inline-block; padding: 0 .4rem; border-radius: 4px; font-size: .8rem;
-         background: light-dark(#e7ebf0, #2c313a); margin-right: .25rem; }
+         background: light-dark(#e7ebf0, #2c313a); margin-right: .25rem;
+         white-space: nowrap; }
+  .tag a { text-decoration: none; }
   .tag.ToDelete { background: light-dark(#fde2e1, #46262b); }
   .tag.Keep { background: light-dark(#dcefdc, #24382a); }
   .tag.Trimmed { background: light-dark(#dceef0, #1f3538); }
@@ -78,19 +81,32 @@
   .chartrow { display: flex; gap: 1.4rem; flex-wrap: wrap; align-items: flex-start; }
   .chartrow table { width: auto; }
   .tablewrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* sticky filter bar above the tables + sticky table headers below it */
+  #filterbar { position: sticky; top: 0; z-index: 5; background: var(--page);
+               padding: .45rem 0; margin-bottom: .5rem; }
+  .tablewrap th { position: sticky; top: 2.7rem; background: var(--surface); z-index: 2; }
+  /* desktop: tables fit, so let them share the page scroll — sticky th
+     then pins to the viewport (an overflow ancestor would trap it) */
+  @media (min-width: 48rem) { .tablewrap { overflow-x: visible; } }
 
   /* phone: same content, scrollable tables, full-width filter, tighter
      chrome — desktop rendering is untouched */
   @media (max-width: 48rem) {
     body { padding: .8rem .7rem 2rem; }
     .hdr { gap: .5rem .6rem; }
-    .hdr input[type=search] { min-width: 0; flex: 1 1 100%; order: 9; }
+    #filterbar input[type=search] { width: 100%; box-sizing: border-box; }
     .card { padding: .7rem .8rem; }
     .kpis { gap: .5rem; }
     .tile { padding: .45rem .7rem .5rem; }
     .tile .v { font-size: 1.15rem; }
-    .name { max-width: none; }
+    /* keep the name column readable: let the table overflow horizontally
+       instead of squeezing the column into tall wrapped slivers */
+    .name { max-width: none; min-width: 16rem; }
     th, td { padding: .25rem .4rem; }
+    /* phone tables scroll inside the wrapper (both axes); th sticks to
+       the wrapper's own top */
+    .tablewrap { max-height: 75vh; overflow: auto; }
+    .tablewrap th { top: 0; }
   }
   @media (pointer: coarse) {
     button { padding: .3rem .7rem; }
@@ -108,13 +124,15 @@
   <span id="scanning" class="muted"></span>
   <span class="grow"></span>
   <span class="toggle" id="metricToggle"></span>
-  <input id="filter" type="search" placeholder="过滤名称 / 分类…"
-         oninput="ui.filter=this.value.toLowerCase();render()">
   <button onclick="rescan()">重新扫描</button>
 </div>
 <div id="banners"></div>
 <div id="kpis" class="kpis"></div>
 <div id="charts"></div>
+<div id="filterbar">
+  <input id="filter" type="search" placeholder="过滤名称 / 分类…"
+         oninput="ui.filter=this.value.toLowerCase();render()">
+</div>
 <div id="sections"></div>
 <p class="muted" id="generated"></p>
 <div id="tip" hidden></div>
@@ -123,8 +141,12 @@ const fmtSize = n => { for (const u of ['B','K','M','G','T']) { if (Math.abs(n) 
 const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 // filter: substring match on 名称/分类; sort[tableKey] = {col, desc};
-// metric: 0 = bytes, 1 = torrent count (charts); trendBy: 0 = 状态, 1 = 分类
-const ui = { filter: '', sort: {}, metric: 0, trendBy: 0 };
+// metric: 0 = bytes, 1 = torrent count (charts); trendBy: 0 = 状态, 1 = 分类;
+// open: per-section collapse override. metric/trendBy/open survive reloads.
+const ui = { filter: '', sort: {}, metric: 0, trendBy: 0, open: {},
+             ...JSON.parse(localStorage.getItem('sw_ui') || '{}'), filter: '' };
+const saveUi = () => localStorage.setItem('sw_ui',
+  JSON.stringify({ metric: ui.metric, trendBy: ui.trendBy, open: ui.open }));
 
 async function api(method, path) {
   const r = await fetch(path, {method});
@@ -184,9 +206,11 @@ function torrentTable(key, rows, extraCols = []) {
   return `<div class="tablewrap"><table><tr>${head}</tr>` +
     rows.map(t => `<tr>${cols.map(c => c[1](t)).join('')}</tr>`).join('') + '</table></div>';
 }
-function section(title, html, open = true) {
-  return open ? `<section class="card"><h2>${title}</h2>${html}</section>`
-              : `<details class="card"><summary>${title}</summary>${html}</details>`;
+function section(key, title, html, defaultOpen = true) {
+  const open = ui.open[key] ?? defaultOpen;
+  return `<details class="card" ${open ? 'open' : ''}
+    ontoggle="ui.open['${key}']=this.open;saveUi()">
+    <summary>${title}</summary>${html}</details>`;
 }
 
 let lastData = null;
@@ -286,10 +310,10 @@ function compositionHtml(rep, agg) {
   const counts = {};
   for (const t of rep.torrents) counts[t.status] = (counts[t.status] || 0) + 1;
   const detail = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(' · ');
-  return `<section class="card"><h2>生命周期构成</h2>
+  return section('composition', '生命周期构成', `
     <div class="bar">${segs}</div>
     ${legendHtml(BUCKETS.map((b, i) => [b[1], b[2], bar[i]]))}
-    <p class="legend muted">${detail}</p></section>`;
+    <p class="legend muted">${detail}</p>`);
 }
 
 // ---- category pie + table ----
@@ -325,20 +349,20 @@ function categoryCard(rep) {
       <tr><td><span class="sw" style="background:${SER[slotOf(c === '未分类' ? '' : c)]}"></span>${esc(c)}</td>
       <td class="num">${fmtSize(v[0])}</td><td class="num">${v[1]}</td>
       <td class="num">${(100 * mval(v) / total).toFixed(1)}%</td></tr>`).join('') + '</table>';
-  return `<section class="card"><h2>分类占比</h2>
+  return section('category', '分类占比', `
     <div class="chartrow">
       <svg width="160" height="160" role="img" aria-label="分类占比饼图">${slices}</svg>
       <div style="flex:1" class="tablewrap">${catTable}</div>
-    </div></section>`;
+    </div>`, false);
 }
 
 // ---- trend (stacked area over history) ----
 const TW = 720, TPT = 8, TPH = 190, TAX = 22, TPL = 56, TPR = 8;
 function trendCard() {
-  const toggle = `<span class="toggle" style="float:right">
-    <button aria-pressed="${!ui.trendBy}" onclick="ui.trendBy=0;render()">状态</button>
-    <button aria-pressed="${!!ui.trendBy}" onclick="ui.trendBy=1;render()">分类</button></span>`;
-  return `<section class="card">${toggle}<h2>趋势</h2>${trendHtml()}</section>`;
+  const toggle = `<p class="toggle" style="margin:.1rem 0 .5rem">
+    <button aria-pressed="${!ui.trendBy}" onclick="ui.trendBy=0;saveUi();render()">状态</button>
+    <button aria-pressed="${!!ui.trendBy}" onclick="ui.trendBy=1;saveUi();render()">分类</button></p>`;
+  return section('trend', '趋势', toggle + trendHtml());
 }
 function trendHtml() {
   // series defs [name, color] + per-entry accessor for the chosen view
@@ -422,8 +446,8 @@ function render() {
   if (data.error) banners.push(`<div class="banner err">上次扫描失败：${esc(data.error.detail)}</div>`);
   document.getElementById('banners').innerHTML = banners.join('');
   document.getElementById('metricToggle').innerHTML = `
-    <button aria-pressed="${!ui.metric}" onclick="ui.metric=0;render()">空间</button>
-    <button aria-pressed="${!!ui.metric}" onclick="ui.metric=1;render()">数量</button>`;
+    <button aria-pressed="${!ui.metric}" onclick="ui.metric=0;saveUi();render()">空间</button>
+    <button aria-pressed="${!!ui.metric}" onclick="ui.metric=1;saveUi();render()">数量</button>`;
   const rep = data.report;
   if (!rep) { document.getElementById('kpis').innerHTML = '<p class="muted">首次扫描尚未完成…</p>'; return; }
   document.getElementById('generated').textContent =
@@ -442,27 +466,27 @@ function render() {
   const waiting = rep.torrents.filter(t => t.tags.includes('ToDelete') && !t.tags.includes('Keep'));
 
   const secs = [];
-  secs.push(section(`部分引用 — 需人工裁决 (${partial.length})`,
+  secs.push(section('partial', `部分引用 — 需人工裁决 (${partial.length})`,
     torrentTable('partial', partial, [['引用', t => `${t.media_total - t.media_unref}/${t.media_total} 保留，可释放 ${fmtSize(t.unref_bytes)}`, t => t.unref_bytes]])));
-  secs.push(section(`Media 已全删（自动打标范围）(${unref.length})`,
+  secs.push(section('unref', `Media 已全删（自动打标范围）(${unref.length})`,
     torrentTable('unref', unref)));
-  secs.push(section(`待收割队列 — ToDelete 等 ratio 达标 (${waiting.length})`,
+  secs.push(section('waiting', `待收割队列 — ToDelete 等 ratio 达标 (${waiting.length})`,
     torrentTable('waiting', waiting, [['做种天数', t => t.seeding_days, t => t.seeding_days], ['tracker', t => esc(t.tracker), t => t.tracker]])));
-  secs.push(section(`本轮动作 (${rep.actions_taken.length})`,
+  secs.push(section('actions', `本轮动作 (${rep.actions_taken.length})`,
     rep.actions_taken.length ? '<div class="tablewrap"><table><tr><th>动作</th><th>名称</th><th>ratio</th><th>详情</th></tr>' +
       rep.actions_taken.map(a => `<tr><td>${a.action}${a.dry_run ? ' (dry-run)' : ''}</td>
         <td class="name">${esc(a.name)}</td><td class="num">${a.ratio}</td>
         <td>${a.action === 'reap' ? (a.delete_files ? '删文件' : '仅删条目，文件由 ' + esc((a.shared_with || []).join(', ')) + ' 保留') : ''}</td></tr>`).join('')
       + '</table></div>' : '<p class="muted">（无）</p>'));
-  secs.push(section(`异常 — 文件缺失 / 无媒体文件 (${anomaly.length})`,
+  secs.push(section('anomaly', `异常 — 文件缺失 / 无媒体文件 (${anomaly.length})`,
     torrentTable('anomaly', anomaly, [['状态', t => t.status, t => t.status]]), anomaly.length > 0));
-  secs.push(section(`cross-seed 组 (${rep.cross_seed.length})`,
+  secs.push(section('xseed', `cross-seed 组 (${rep.cross_seed.length})`,
     rep.cross_seed.length ? '<ul>' + rep.cross_seed.map(g => `<li>${g.map(esc).join(' ⇄ ')}</li>`).join('') + '</ul>'
       : '<p class="muted">（无）</p>', false));
   const orphans = rep.orphans
     .filter(o => !ui.filter || o.path.toLowerCase().includes(ui.filter))
     .sort((a, b) => b.size - a.size);
-  secs.push(section(`孤儿文件 (${rep.orphans.length}, ${fmtSize(rep.orphans.reduce((a, o) => a + o.size, 0))})`,
+  secs.push(section('orphans', `孤儿文件 (${rep.orphans.length}, ${fmtSize(rep.orphans.reduce((a, o) => a + o.size, 0))})`,
     orphans.length ? '<div class="tablewrap"><table><tr><th>路径</th><th class="num">大小</th></tr>' +
       orphans.map(o => `<tr><td class="name">${esc(o.path)}</td><td class="num">${fmtSize(o.size)}</td></tr>`).join('')
       + '</table></div>' : '<p class="muted">（无）</p>', false));
