@@ -99,6 +99,18 @@ def test_trimmed_extras_not_partial():
     assert cls(t3).status is Status.PARTIAL
 
 
+def test_trimmed_tag_overrides_size_heuristic():
+    # human verdict: episode-sized deletion is intentional
+    t = mk_torrent([mk_file("/d/ep1.mkv", 2, size=1000),
+                    mk_file("/d/ep2.mkv", 1, size=1000)], tags=["Trimmed"])
+    assert cls(t).status is Status.TRIMMED
+    # ...but once Media drops everything, autotag still applies
+    t2 = mk_torrent([mk_file("/d/ep1.mkv", 1, size=1000)], tags=["Trimmed"])
+    v = cls(t2)
+    assert v.status is Status.UNREFERENCED
+    assert wants_autotag(t2, v)
+
+
 def test_unselected_and_nonmedia_files_ignored():
     t = mk_torrent([
         mk_file("/d/a.mkv", 1),

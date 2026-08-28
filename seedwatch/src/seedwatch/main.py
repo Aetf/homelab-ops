@@ -16,14 +16,15 @@ from fastapi.responses import FileResponse
 
 from .config import load_config
 from .qb import QBClient
-from .reconcile import Auditor, reconcile
-from .scan import TAG_KEEP, TAG_TODELETE
+from .reconcile import Auditor, History, reconcile
+from .scan import TAG_KEEP, TAG_TODELETE, TAG_TRIMMED
 
 log = logging.getLogger("seedwatch")
 WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
 
 cfg = load_config()
 auditor = Auditor(cfg.data_dir)
+history = History(cfg.data_dir)
 state: dict = {"report": None, "error": None, "scanning": False}
 wakeup = asyncio.Event()
 
@@ -32,7 +33,7 @@ async def scan_loop(qb: QBClient) -> None:
     while True:
         state["scanning"] = True
         try:
-            report = await reconcile(qb, cfg, auditor)
+            report = await reconcile(qb, cfg, auditor, history)
             state["report"] = asdict(report)
             state["error"] = None
         except Exception:
@@ -82,7 +83,7 @@ async def rescan() -> dict:
     return {"ok": True}
 
 
-VALID_TAGS = {TAG_TODELETE, TAG_KEEP}
+VALID_TAGS = {TAG_TODELETE, TAG_KEEP, TAG_TRIMMED}
 
 
 def _patch_report_tags(torrent_hash: str, tag: str, *, add: bool) -> None:
@@ -100,6 +101,15 @@ def _patch_report_tags(torrent_hash: str, tag: str, *, add: bool) -> None:
             tags = set(row["tags"])
             (tags.add if add else tags.discard)(tag)
             row["tags"] = sorted(tags)
+            # Adjudicating a PARTIAL as Trimmed resolves it right away in
+            # the UI; the flip back on untag is approximate (a torrent
+            # that is TRIMMED by size heuristic alone stays trimmed) and
+            # the next scan re-derives the truth either way.
+            if tag == TAG_TRIMMED:
+                if add and row["status"] == "partial":
+                    row["status"] = "trimmed"
+                elif not add and row["status"] == "trimmed":
+                    row["status"] = "partial"
 
 
 @app.post("/api/torrents/{torrent_hash}/tags/{tag}")
@@ -123,6 +133,11 @@ async def remove_tag(torrent_hash: str, tag: str) -> dict:
 @app.get("/api/audit")
 async def audit_log() -> list[dict]:
     return auditor.tail()
+
+
+@app.get("/api/history")
+async def category_history() -> list[dict]:
+    return history.tail()
 
 
 def run() -> None:

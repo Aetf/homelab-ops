@@ -25,6 +25,7 @@
          background: light-dark(#e7ebf0, #2c313a); margin-right: .25rem; }
   .tag.ToDelete { background: light-dark(#fde2e1, #46262b); }
   .tag.Keep { background: light-dark(#dcefdc, #24382a); }
+  .tag.Trimmed { background: light-dark(#dceef0, #1f3538); }
   button { font: inherit; font-size: .8rem; padding: .1rem .5rem; border-radius: 4px;
            border: 1px solid light-dark(#c8cdd3, #3d434b);
            background: light-dark(#fff, #1e2228); color: inherit; cursor: pointer; }
@@ -36,6 +37,23 @@
     background: light-dark(#fff, #1e2228); color: inherit; min-width: 16rem; }
   th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
   th.sortable:hover { color: light-dark(#1c1e21, #d8dade); }
+  /* categorical series (validated palette, light/dark stepped) */
+  :root { --s1: light-dark(#2a78d6, #3987e5); --s2: light-dark(#eb6834, #d95926);
+          --s3: light-dark(#1baf7a, #199e70); --s4: light-dark(#eda100, #c98500);
+          --s5: light-dark(#e87ba4, #d55181); --sother: #898781;
+          --surface: light-dark(#fafafa, #14161a);
+          --grid: light-dark(#e3e5e8, #2a2e34); --muted: #898781; }
+  .chartrow { display: flex; gap: 2rem; flex-wrap: wrap; align-items: flex-start; }
+  .chartrow table { width: auto; }
+  .legend { margin: .4rem 0; }
+  .legend span.lg { margin-right: 1.1rem; white-space: nowrap; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+        margin-right: .35rem; vertical-align: baseline; }
+  .toggle button[aria-pressed="true"] { background: light-dark(#e7ebf0, #2c313a); font-weight: 600; }
+  #tip { position: fixed; pointer-events: none; z-index: 10; font-size: .8rem;
+         background: light-dark(#fff, #1e2228); border: 1px solid light-dark(#c8cdd3, #3d434b);
+         border-radius: 6px; padding: .35rem .6rem; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+  svg text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -45,13 +63,16 @@
 <p><button onclick="rescan()">重新扫描</button>
    <input id="filter" type="search" placeholder="过滤名称 / 分类…" oninput="ui.filter=this.value.toLowerCase();render()">
    <span class="muted" id="generated"></span></p>
+<div id="charts"></div>
 <div id="sections"></div>
+<div id="tip" hidden></div>
 <script>
 const fmtSize = n => { for (const u of ['B','K','M','G','T']) { if (Math.abs(n) < 1024) return n.toFixed(1)+u; n /= 1024; } return n.toFixed(1)+'P'; };
 const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-// filter is a substring match on 名称/分类; sort[tableKey] = {col, desc}
-const ui = { filter: '', sort: {} };
+// filter is a substring match on 名称/分类; sort[tableKey] = {col, desc};
+// metric: 0 = bytes, 1 = torrent count (charts only)
+const ui = { filter: '', sort: {}, metric: 0 };
 
 async function api(method, path) {
   const r = await fetch(path, {method});
@@ -70,14 +91,16 @@ function sortBy(key, col) {
 
 function tagChips(t) {
   return t.tags.map(x => `<span class="tag ${esc(x)}">${esc(x)}${
-    (x === 'ToDelete' || x === 'Keep')
+    (x === 'ToDelete' || x === 'Keep' || x === 'Trimmed')
       ? ` <a href="#" onclick="untag('${t.hash}','${x}');return false">×</a>` : ''
   }</span>`).join('');
 }
 function actionBtns(t) {
   let b = '';
   if (!t.tags.includes('ToDelete')) b += `<button onclick="tag('${t.hash}','ToDelete')">ToDelete</button> `;
-  if (!t.tags.includes('Keep')) b += `<button onclick="tag('${t.hash}','Keep')">Keep</button>`;
+  if (!t.tags.includes('Keep')) b += `<button onclick="tag('${t.hash}','Keep')">Keep</button> `;
+  if (t.status === 'partial' && !t.tags.includes('Trimmed'))
+    b += `<button onclick="tag('${t.hash}','Trimmed')">Trimmed</button>`;
   return b;
 }
 // extraCols entries: [label, renderFn, sortAccessor?]
@@ -115,10 +138,150 @@ function section(title, html, open = true) {
 }
 
 let lastData = null;
+let lastHistory = [];
 
 async function load() {
-  lastData = await (await fetch('/api/report')).json();
+  [lastData, lastHistory] = await Promise.all([
+    (await fetch('/api/report')).json(), (await fetch('/api/history')).json()]);
   render();
+}
+
+// ---- category charts (pie = current share, stacked area = trend) ----
+// Fixed slot order so colors follow the category across time and filters;
+// everything else folds into 其他 (gray). Edit here if the library's big
+// categories ever change.
+const CAT_ORDER = ['Mov', '电影', '剧集', '动漫', 'Anim'];
+const NC = CAT_ORDER.length;
+const SER = ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)', 'var(--s5)', 'var(--sother)'];
+const catName = i => i < NC ? CAT_ORDER[i] : '其他';
+const slotOf = c => { const i = CAT_ORDER.indexOf(c); return i < 0 ? NC : i; };
+const mval = o => ui.metric ? o[1] : o[0];          // o = [size, count]
+const mfmt = v => ui.metric ? String(v) : fmtSize(v);
+let pieData = null, trendMeta = null;
+
+const tipEl = () => document.getElementById('tip');
+function showTip(ev, html) {
+  const el = tipEl();
+  el.innerHTML = html; el.hidden = false;
+  const x = Math.min(ev.clientX + 14, innerWidth - el.offsetWidth - 8);
+  el.style.left = x + 'px'; el.style.top = (ev.clientY + 14) + 'px';
+}
+function hideTip() { tipEl().hidden = true; }
+
+function pieTip(ev, i) {
+  const v = pieData.slots[i], total = pieData.total;
+  showTip(ev, `<span class="sw" style="background:${SER[i]}"></span>${catName(i)}：${
+    mfmt(mval(v))} (${(100 * mval(v) / total).toFixed(1)}%)`);
+}
+
+function arcPath(cx, cy, r, a0, a1) {
+  a1 = Math.min(a1, a0 + Math.PI * 2 - 1e-3);
+  const px = a => (cx + r * Math.sin(a)).toFixed(1), py = a => (cy - r * Math.cos(a)).toFixed(1);
+  return `M${cx},${cy} L${px(a0)},${py(a0)} A${r},${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${px(a1)},${py(a1)} Z`;
+}
+
+function chartsHtml(rep) {
+  // aggregate the snapshot: fixed slots for the charts + full per-category
+  // rows for the table view
+  const slots = Array.from({length: NC + 1}, () => [0, 0]);
+  const full = {};
+  for (const t of rep.torrents) {
+    const s = slots[slotOf(t.category)], f = (full[t.category || '未分类'] ??= [0, 0]);
+    s[0] += t.size; s[1]++; f[0] += t.size; f[1]++;
+  }
+  const total = slots.reduce((a, s) => a + mval(s), 0) || 1;
+  pieData = { slots, total };
+
+  let a = 0;
+  const slices = slots.map((s, i) => {
+    const v = mval(s); if (!v) return '';
+    const a0 = a; a += v / total * Math.PI * 2;
+    return `<path d="${arcPath(100, 100, 88, a0, a)}" fill="${SER[i]}"
+      stroke="var(--surface)" stroke-width="2"
+      onmousemove="pieTip(event,${i})" onmouseleave="hideTip()"/>`;
+  }).join('');
+  const pie = `<svg width="200" height="200" role="img" aria-label="分类占比饼图">${slices}</svg>`;
+
+  const catTable = '<table><tr><th>分类</th><th class="num">大小</th><th class="num">数量</th><th class="num">占比</th></tr>' +
+    Object.entries(full).sort((x, y) => mval(y[1]) - mval(x[1])).map(([c, v]) => `
+      <tr><td><span class="sw" style="background:${SER[slotOf(c === '未分类' ? '' : c)]}"></span>${esc(c)}</td>
+      <td class="num">${fmtSize(v[0])}</td><td class="num">${v[1]}</td>
+      <td class="num">${(100 * mval(v) / total).toFixed(1)}%</td></tr>`).join('') + '</table>';
+
+  const legend = '<p class="legend">' + slots.map((s, i) => mval(s)
+    ? `<span class="lg"><span class="sw" style="background:${SER[i]}"></span>${catName(i)} ${mfmt(mval(s))}</span>`
+    : '').join('') + '</p>';
+
+  const toggle = `<span class="toggle">
+    <button aria-pressed="${!ui.metric}" onclick="ui.metric=0;render()">空间</button>
+    <button aria-pressed="${!!ui.metric}" onclick="ui.metric=1;render()">数量</button></span>`;
+
+  return `<h2>分类占比 ${toggle}</h2>${legend}
+    <div class="chartrow"><div>${pie}</div><div>${catTable}</div></div>
+    <h2>趋势</h2>${trendHtml()}`;
+}
+
+function trendHtml() {
+  if (lastHistory.length < 2)
+    return '<p class="muted">趋势图需要至少两轮扫描的历史（每小时一轮，正在积累）。</p>';
+  const vals = lastHistory.map(e => {
+    const v = Array(NC + 1).fill(0);
+    for (const [c, sc] of Object.entries(e.cats)) v[slotOf(c)] += mval(sc);
+    return v;
+  });
+  const W = 760, PT = 8, PH = 190, AX = 22, PL = 56, PR = 8;
+  const t0 = lastHistory[0].ts, t1 = lastHistory[lastHistory.length - 1].ts;
+  const X = ts => PL + (ts - t0) / (t1 - t0 || 1) * (W - PL - PR);
+  const ymax = Math.max(...vals.map(v => v.reduce((a, b) => a + b, 0))) * 1.05 || 1;
+  const Y = v => PT + (1 - v / ymax) * (PH - PT);
+  trendMeta = { X, vals, PL, PR, W };
+
+  // cumulative stacks, slot 0 at the bottom
+  const cum = vals.map(v => { let c = 0; return v.map(x => c += x); });
+  const line = (k, rev) => {
+    const pts = lastHistory.map((e, j) => `${X(e.ts).toFixed(1)},${Y(cum[j][k]).toFixed(1)}`);
+    return (rev ? pts.reverse() : pts).join(' ');
+  };
+  const areas = [];
+  for (let k = NC; k >= 0; k--) {
+    const bottom = k === 0
+      ? `${X(t1).toFixed(1)},${Y(0)} ${X(t0).toFixed(1)},${Y(0)}` : line(k - 1, true);
+    areas.push(`<polygon points="${line(k, false)} ${bottom}" fill="${SER[k]}"
+      stroke="var(--surface)" stroke-width="2"/>`);
+  }
+  const grid = [0.5, 1].map(f => `
+    <line x1="${PL}" y1="${Y(ymax * f)}" x2="${W - PR}" y2="${Y(ymax * f)}" stroke="var(--grid)"/>
+    <text x="${PL - 6}" y="${Y(ymax * f) + 4}" text-anchor="end">${mfmt(Math.round(ymax * f))}</text>`);
+  const xticks = [0, 0.5, 1].map(f => {
+    const ts = t0 + (t1 - t0) * f;
+    const anchor = f === 0 ? 'start' : f === 1 ? 'end' : 'middle';
+    return `<text x="${X(ts)}" y="${PH + AX - 6}" text-anchor="${anchor}">${
+      new Date(ts * 1000).toLocaleDateString('zh', {month: 'numeric', day: 'numeric'})}</text>`;
+  });
+  return `<svg id="trend" width="${W}" height="${PH + AX}" role="img" aria-label="分类趋势图"
+      style="max-width:100%" onmousemove="trendTip(event)" onmouseleave="hideTip();trendXh(-1)">
+    ${grid.join('')}${areas.join('')}
+    <line id="xh" y1="${PT}" y2="${PH}" stroke="var(--muted)" visibility="hidden"/>
+    <line x1="${PL}" y1="${Y(0)}" x2="${W - PR}" y2="${Y(0)}" stroke="var(--grid)"/>
+    ${xticks.join('')}</svg>`;
+}
+
+function trendXh(x) {
+  const xh = document.getElementById('xh');
+  if (xh) { xh.setAttribute('visibility', x < 0 ? 'hidden' : 'visible'); if (x >= 0) { xh.setAttribute('x1', x); xh.setAttribute('x2', x); } }
+}
+function trendTip(ev) {
+  const svg = document.getElementById('trend');
+  const px = (ev.clientX - svg.getBoundingClientRect().left) * (svg.width.baseVal.value / svg.getBoundingClientRect().width);
+  let best = 0, bd = Infinity;
+  lastHistory.forEach((e, j) => {
+    const d = Math.abs(trendMeta.X(e.ts) - px); if (d < bd) { bd = d; best = j; }
+  });
+  trendXh(trendMeta.X(lastHistory[best].ts));
+  const v = trendMeta.vals[best];
+  showTip(ev, `<b>${new Date(lastHistory[best].ts * 1000).toLocaleString()}</b><br>` +
+    v.map((x, i) => x ? `<span class="sw" style="background:${SER[i]}"></span>${catName(i)} ${mfmt(x)}` : '')
+      .filter(Boolean).join('<br>') + `<br>合计 ${mfmt(v.reduce((a, b) => a + b, 0))}`);
 }
 
 function render() {
@@ -133,6 +296,7 @@ function render() {
   if (!rep) { document.getElementById('summary').textContent = '首次扫描尚未完成…'; return; }
   document.getElementById('generated').textContent =
     '上次扫描: ' + new Date(rep.generated_at * 1000).toLocaleString();
+  document.getElementById('charts').innerHTML = chartsHtml(rep);
 
   const by = s => rep.torrents.filter(t => t.status === s);
   const partial = by('partial');

@@ -137,6 +137,29 @@ class Auditor:
         return [json.loads(line) for line in lines]
 
 
+class History:
+    """Per-scan category totals (JSONL), the trend chart's data source.
+
+    One line per reconcile pass: {"ts": ..., "cats": {category: [bytes,
+    count]}}. Hourly scans keep this small; tail() caps reads anyway.
+    """
+
+    def __init__(self, data_dir: Path) -> None:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        self._path = data_dir / "history.jsonl"
+
+    def append(self, ts: float, cats: dict[str, list[int]]) -> None:
+        with open(self._path, "a") as f:
+            f.write(json.dumps({"ts": ts, "cats": cats}, ensure_ascii=False) + "\n")
+
+    def tail(self, n: int = 5000) -> list[dict[str, Any]]:
+        if not self._path.is_file():
+            return []
+        with open(self._path) as f:
+            lines = f.readlines()[-n:]
+        return [json.loads(line) for line in lines]
+
+
 def _torrent_row(t: Torrent, v: Verdict, cfg: Config) -> dict[str, Any]:
     policy = cfg.tracker_policy(t.tracker_host)
     return {
@@ -156,7 +179,8 @@ def _torrent_row(t: Torrent, v: Verdict, cfg: Config) -> dict[str, Any]:
     }
 
 
-async def reconcile(qb: QBClient, cfg: Config, auditor: Auditor) -> Report:
+async def reconcile(qb: QBClient, cfg: Config, auditor: Auditor,
+                    history: History | None = None) -> Report:
     now = time.time()
     torrents = await gather_torrents(qb, cfg)
     verdicts = {
@@ -205,4 +229,11 @@ async def reconcile(qb: QBClient, cfg: Config, auditor: Auditor) -> Report:
     report.orphans = await asyncio.to_thread(
         _scan_orphans, cfg.downloads, claimed, live_hashes)
     report.actions_taken = actions
+    if history is not None:
+        cats: dict[str, list[int]] = {}
+        for row in report.torrents:
+            c = cats.setdefault(row["category"], [0, 0])
+            c[0] += row["size"]
+            c[1] += 1
+        history.append(now, cats)
     return report

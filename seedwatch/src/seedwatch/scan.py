@@ -19,6 +19,9 @@ from pathlib import Path
 
 TAG_TODELETE = "ToDelete"
 TAG_KEEP = "Keep"
+# Human verdict on a PARTIAL torrent: "this deletion pattern is intentional,
+# treat as TRIMMED" — overrides the extras-size heuristic.
+TAG_TRIMMED = "Trimmed"
 
 MEDIA_EXT = {
     ".mkv", ".mp4", ".avi", ".m2ts", ".ts", ".wmv", ".mov", ".rmvb",
@@ -96,7 +99,8 @@ def classify(t: Torrent, *, managed: frozenset[str], now: float, grace_hours: fl
         # qualifies, nothing adjudication-worthy was deleted. Anything
         # main-video-sized gone (e.g. individual episodes) stays PARTIAL.
         threshold = extras_fraction * max(f.size for f in media if f.nlink != 1)
-        status = (Status.TRIMMED if all(f.size <= threshold for f in unref)
+        status = (Status.TRIMMED
+                  if TAG_TRIMMED in t.tags or all(f.size <= threshold for f in unref)
                   else Status.PARTIAL)
     return Verdict(
         status=status,
