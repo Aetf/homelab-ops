@@ -77,6 +77,25 @@
         margin-right: .35rem; vertical-align: baseline; }
   .chartrow { display: flex; gap: 1.4rem; flex-wrap: wrap; align-items: flex-start; }
   .chartrow table { width: auto; }
+  .tablewrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* phone: same content, scrollable tables, full-width filter, tighter
+     chrome — desktop rendering is untouched */
+  @media (max-width: 48rem) {
+    body { padding: .8rem .7rem 2rem; }
+    .hdr { gap: .5rem .6rem; }
+    .hdr input[type=search] { min-width: 0; flex: 1 1 100%; order: 9; }
+    .card { padding: .7rem .8rem; }
+    .kpis { gap: .5rem; }
+    .tile { padding: .45rem .7rem .5rem; }
+    .tile .v { font-size: 1.15rem; }
+    .name { max-width: none; }
+    th, td { padding: .25rem .4rem; }
+  }
+  @media (pointer: coarse) {
+    button { padding: .3rem .7rem; }
+    .tag a { padding: .15rem .3rem; }
+  }
   #tip { position: fixed; pointer-events: none; z-index: 10; font-size: .8rem;
          background: var(--surface); border: 1px solid light-dark(#c8cdd3, #3d434b);
          border-radius: 6px; padding: .35rem .6rem; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
@@ -162,8 +181,8 @@ function torrentTable(key, rows, extraCols = []) {
     ? `<th class="sortable" onclick="sortBy('${key}','${c[0]}')">${c[0]}${
         s && s.col === c[0] ? (s.desc ? ' ▼' : ' ▲') : ''}</th>`
     : `<th>${c[0]}</th>`).join('');
-  return `<table><tr>${head}</tr>` +
-    rows.map(t => `<tr>${cols.map(c => c[1](t)).join('')}</tr>`).join('') + '</table>';
+  return `<div class="tablewrap"><table><tr>${head}</tr>` +
+    rows.map(t => `<tr>${cols.map(c => c[1](t)).join('')}</tr>`).join('') + '</table></div>';
 }
 function section(title, html, open = true) {
   return open ? `<section class="card"><h2>${title}</h2>${html}</section>`
@@ -309,7 +328,7 @@ function categoryCard(rep) {
   return `<section class="card"><h2>分类占比</h2>
     <div class="chartrow">
       <svg width="160" height="160" role="img" aria-label="分类占比饼图">${slices}</svg>
-      <div style="flex:1">${catTable}</div>
+      <div style="flex:1" class="tablewrap">${catTable}</div>
     </div></section>`;
 }
 
@@ -430,11 +449,11 @@ function render() {
   secs.push(section(`待收割队列 — ToDelete 等 ratio 达标 (${waiting.length})`,
     torrentTable('waiting', waiting, [['做种天数', t => t.seeding_days, t => t.seeding_days], ['tracker', t => esc(t.tracker), t => t.tracker]])));
   secs.push(section(`本轮动作 (${rep.actions_taken.length})`,
-    rep.actions_taken.length ? '<table><tr><th>动作</th><th>名称</th><th>ratio</th><th>详情</th></tr>' +
+    rep.actions_taken.length ? '<div class="tablewrap"><table><tr><th>动作</th><th>名称</th><th>ratio</th><th>详情</th></tr>' +
       rep.actions_taken.map(a => `<tr><td>${a.action}${a.dry_run ? ' (dry-run)' : ''}</td>
         <td class="name">${esc(a.name)}</td><td class="num">${a.ratio}</td>
         <td>${a.action === 'reap' ? (a.delete_files ? '删文件' : '仅删条目，文件由 ' + esc((a.shared_with || []).join(', ')) + ' 保留') : ''}</td></tr>`).join('')
-      + '</table>' : '<p class="muted">（无）</p>'));
+      + '</table></div>' : '<p class="muted">（无）</p>'));
   secs.push(section(`异常 — 文件缺失 / 无媒体文件 (${anomaly.length})`,
     torrentTable('anomaly', anomaly, [['状态', t => t.status, t => t.status]]), anomaly.length > 0));
   secs.push(section(`cross-seed 组 (${rep.cross_seed.length})`,
@@ -444,9 +463,9 @@ function render() {
     .filter(o => !ui.filter || o.path.toLowerCase().includes(ui.filter))
     .sort((a, b) => b.size - a.size);
   secs.push(section(`孤儿文件 (${rep.orphans.length}, ${fmtSize(rep.orphans.reduce((a, o) => a + o.size, 0))})`,
-    orphans.length ? '<table><tr><th>路径</th><th class="num">大小</th></tr>' +
+    orphans.length ? '<div class="tablewrap"><table><tr><th>路径</th><th class="num">大小</th></tr>' +
       orphans.map(o => `<tr><td class="name">${esc(o.path)}</td><td class="num">${fmtSize(o.size)}</td></tr>`).join('')
-      + '</table>' : '<p class="muted">（无）</p>', false));
+      + '</table></div>' : '<p class="muted">（无）</p>', false));
   document.getElementById('sections').innerHTML = secs.join('');
 }
 load();
