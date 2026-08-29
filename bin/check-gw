@@ -19,6 +19,28 @@ for m in adguard-alice adguard-bob caddy; do
     grep -q "^$m " <<<"$running" || issues+=("container $m not running")
 done
 
+# 2b. Boot chain health. udm-boot is the anchor that reconverges everything
+# after a firmware update; the offline deb cache is consumed exactly when apt
+# is unreachable on a post-update boot, so it must always match the installed
+# versions (a stale cache aborting the boot chain caused the 2026-08-28 DNS
+# outage). See gw-config's README "Boot chain".
+boot=$(ssh -o BatchMode=yes -o ConnectTimeout=10 gw bash -s 2>/dev/null <<'EOF'
+systemctl is-enabled udm-boot >/dev/null 2>&1 || echo "udm-boot hook not enabled (on_boot.d will not run next boot)"
+state=$(systemctl is-active udm-boot 2>/dev/null)
+[ "$state" = active ] || echo "udm-boot last run: $state (systemctl status udm-boot for per-script output)"
+systemctl is-active --quiet nspawn-bridge-watchdog || echo "nspawn-bridge-watchdog not running"
+for p in systemd-container libnss-mymachines rsync; do
+    v=$(dpkg-query -W -f '${Version}' "$p" 2>/dev/null)
+    if [ -z "$v" ]; then echo "package $p not installed"; continue; fi
+    ls "/data/custom/dpkg/${p}_${v}_"*.deb >/dev/null 2>&1 ||
+        echo "offline deb cache stale for $p (installed $v, cache: $(ls /data/custom/dpkg/${p}_* 2>/dev/null || echo none))"
+done
+EOF
+)
+while IFS= read -r line; do
+    [[ -n $line ]] && issues+=("gw boot chain: $line")
+done <<<"$boot"
+
 # 3. Wildcard cert served and not close to expiry
 end=$(echo | timeout 10 openssl s_client -connect adguard.lan.ucw.phd:443 \
     -servername adguard.lan.ucw.phd 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
