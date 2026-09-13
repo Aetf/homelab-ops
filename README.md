@@ -11,11 +11,6 @@ scoped to the homelab host via a yadm `##h.<hostname>` alternate.
   for the internal reverse proxy; mails a report when something is off.
 - `bin/gw-backup-pull` — weekly pull of UniFi/AdGuard backups from the
   gateway into `~/.config/gw-config/backups`.
-- `bin/lan-proxy-probe` — long-running probe of `*.lan.ucw.phd` services
-  through the gateway's caddy; on the first failure it captures packets on
-  both sides of the gateway (caddy veth and the LAN bridge) plus the gateway's
-  IPS block set, neighbour and conntrack state, so a "502 with a healthy
-  backend" can be attributed to the hop that dropped it.
 - `bin/check-hath` — periodic health check for the Hentai@Home client
   running in k8s: restarts it when the pod is broken or silent, alerts on
   startup-failure loops.
