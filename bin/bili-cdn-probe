@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""Rank Bilibili video CDN edges from this network and (optionally) steer LAN
+clients to the best ones through AdGuard DNS rewrites.
+
+Why this exists: overseas, Bilibili hands each media stream to either Akamai
+(upos-hz-mirrorakam.akamaized.net) or one of its overseas cloud mirrors
+(upos-sz-mirror{cos,ali}ov.bilivideo.com); the pick is per stream and
+effectively random. Each mirror name resolves to a pool of edge IPs whose
+throughput from here differs by more than an order of magnitude, and the
+answer a client gets depends on which resolver it asked. Two knobs work
+without touching clients:
+
+  * DNS: answer each mirror name with the IPs of its own edges that measure
+    fastest from here (this script, --apply). Edges only serve their own name
+    (foreign SNI is refused), so pools never mix.
+  * HTTP: the TV/mobile apps fetch Akamai's share over plain HTTP; the
+    gw-config Caddyfile re-homes those requests to a mirror (not this
+    script). The URL signature (upsig) covers only the query parameters
+    listed in uparams, never the host, and mirrors ignore Akamai's hdnts.
+
+How it measures: fetch a freshly signed segment URL via yt-dlp, gather each
+name's candidate IPs from two public DoH resolvers plus the local resolver
+(the current answer stays a candidate), then time a Range GET of PROBE_BYTES
+against every IP with that name as SNI. Web-signed URLs are refused without a
+browser User-Agent plus a bilibili.com Referer, so both are sent. Nothing
+goes through a proxy from the environment: that would measure the proxy.
+
+Caveat: the sample is a popular video, so this ranks the cache-hit path. On a
+miss (first viewer of a segment in the region) the Alibaba edges behind
+mirroraliov drop to single-digit Mbps whichever IP answers, while the G-Core
+edges behind mirrorcosov and Akamai fetch from origin at tens of Mbps; DNS
+cannot move a name off its own edges, so the miss path is what the caddy
+re-homing (cosov first) and a future multi-connection proxy address.
+
+--apply rewrites the managed block of AdGuard user rules on the primary
+instance (adguardhome-sync copies it to the replica); the previous rule set is
+saved under the state directory first. Credentials: ~/.config/adguardhome-sync/env
+(ORIGIN_PASSWORD; user "sync").
+"""
+
+from __future__ import annotations
+
+import argparse
+import socket
+import json
+import os
+import statistics
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+# bilivideo mirror names that accept a host-swapped upos path (206 as of
+# 2026-09); ranked over plain HTTP for choosing the Caddyfile upstreams. Akamai
+# is absent on purpose: it only serves URLs carrying its own hdnts token.
+MIRRORS = [
+    "upos-sz-mirrorcosov.bilivideo.com",
+    "upos-sz-mirroraliov.bilivideo.com",
+    "upos-sz-mirrorali.bilivideo.com",
+    "upos-sz-mirrorcos.bilivideo.com",
+    "upos-sz-mirrorhw.bilivideo.com",
+    "upos-sz-mirror08c.bilivideo.com",
+    "upos-sz-mirrorhwb.bilivideo.com",
+    "upos-sz-mirroralib.bilivideo.com",
+]
+# Names Bilibili actually hands to overseas clients; the rewrites steer these.
+STEERED_NAMES = [
+    "upos-sz-mirrorcosov.bilivideo.com",
+    "upos-sz-mirroraliov.bilivideo.com",
+]
+# A long-lived, public, high-bitrate video: Bilibili's own 4K120 demo.
+SAMPLE_VIDEO = "https://www.bilibili.com/video/BV1fK4y1t7hj"
+DOH = ("https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query")
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+REFERER = "https://www.bilibili.com/"
+PROBE_BYTES = 4 * 1024 * 1024
+ADGUARD_URL = "http://10.0.5.3"
+ADGUARD_USER = "sync"
+MARK_BEGIN = "# >>> bili-cdn-probe managed block (regenerated; edit the script, not this)"
+MARK_END = "# <<< bili-cdn-probe managed block"
+STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "bili-cdn-probe"
+
+# Never route DoH or the AdGuard API through a proxy from the environment.
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+
+
+def log(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
+def signed_path() -> str:
+    """Path+query of a freshly signed segment URL (host stripped)."""
+    log(f"fetching a signed segment URL via yt-dlp ({SAMPLE_VIDEO})…")
+    out = subprocess.run(["uvx", "yt-dlp", "--no-warnings", "-q", "-j", SAMPLE_VIDEO],
+                         capture_output=True, text=True, timeout=180)
+    if out.returncode != 0:
+        sys.exit(f"yt-dlp failed: {out.stderr.strip()[-400:]}")
+    info = json.loads(out.stdout)
+    for f in info["formats"]:
+        u = urllib.parse.urlparse(f["url"])
+        if u.netloc.startswith("upos-") and (f.get("height") or 0) >= 480:
+            return urllib.parse.urlunparse(u._replace(scheme="", netloc=""))
+    sys.exit("no upos video format in yt-dlp output")
+
+
+def resolve_a(name: str) -> list[str]:
+    """Candidate edge IPs for a name: two public DoH resolvers (different
+    geo/ECS views of the pool) plus whatever the local resolver answers today
+    (the currently steered or upstream answer, so a still-good IP keeps its seat)."""
+    ips: list[str] = []
+    for doh in DOH:
+        q = urllib.parse.urlencode({"name": name, "type": "A"})
+        req = urllib.request.Request(f"{doh}?{q}", headers={"accept": "application/dns-json"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                ips += [a["data"] for a in (json.load(r).get("Answer") or []) if a.get("type") == 1]
+        except (urllib.error.URLError, OSError) as e:
+            log(f"  {doh} failed for {name}: {e}")
+    try:
+        ips += sorted({ai[4][0] for ai in socket.getaddrinfo(name, 443, socket.AF_INET)})
+    except OSError:
+        pass
+    return sorted(set(ips))
+
+
+def timed_get(url: str, resolve: str | None = None) -> tuple[int, float]:
+    """(http_code, Mbps) for a Range GET of PROBE_BYTES."""
+    # --noproxy: a proxy in the environment would measure the proxy, not the edge.
+    cmd = ["curl", "-s", "-o", "/dev/null", "--noproxy", "*", "-A", UA, "-H", f"Referer: {REFERER}",
+           "-r", f"0-{PROBE_BYTES - 1}", "--max-time", "25",
+           "-w", "%{http_code} %{size_download} %{speed_download}"]
+    if resolve:
+        cmd += ["--resolve", resolve]
+    cmd.append(url)
+    out = subprocess.run(cmd, capture_output=True, text=True).stdout.split()
+    code = int(out[0]) if out and out[0].isdigit() else 0
+    speed = float(out[2]) if len(out) == 3 else 0.0
+    if code != 206 or float(out[1]) < PROBE_BYTES:
+        return code, 0.0
+    return code, speed * 8 / 1e6
+
+
+def probe(path: str, rounds: int) -> dict:
+    """Measure every candidate edge IP of every steered name over HTTPS with that
+    name as SNI/Host (edges only serve their own name), and every mirror name
+    over plain HTTP (what a proxy resolving through an unsteered resolver gets)."""
+    pools = {name: resolve_a(name) for name in STEERED_NAMES}
+    total = sum(len(v) for v in pools.values())
+    log(f"probing {total} edge IPs × {rounds} rounds over HTTPS ({PROBE_BYTES >> 20} MiB each; a few minutes)…")
+    edges = []
+    for name, ips in pools.items():
+        for ip in ips:
+            speeds = []
+            for _ in range(rounds):
+                code, mbps = timed_get(f"https://{name}{path}", resolve=f"{name}:443:{ip}")
+                speeds.append(mbps)
+                if code != 206:
+                    break
+            edges.append({"name": name, "ip": ip, "https_mbps": round(statistics.median(speeds), 1),
+                          "https_max_mbps": round(max(speeds), 1)})
+    log(f"probing {len(MIRRORS)} mirror names over plain HTTP…")
+    names = []
+    for name in MIRRORS:
+        own = resolve_a(name)[:2]
+        mbps = max((timed_get(f"http://{name}{path}", resolve=f"{name}:80:{ip}")[1] for ip in own), default=0.0)
+        names.append({"name": name, "http_mbps": round(mbps, 1)})
+    edges.sort(key=lambda e: (e["name"], -e["https_mbps"], -e["https_max_mbps"]))
+    names.sort(key=lambda n: n["http_mbps"], reverse=True)
+    return {"measured_at": int(time.time()), "probe_bytes": PROBE_BYTES, "rounds": rounds,
+            "edges": edges, "names": names}
+
+
+def managed_rules(result: dict, top: int) -> list[str]:
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(result["measured_at"]))
+    lines = [MARK_BEGIN, f"# Fastest edges per name measured {when}; A-only answers (empty AAAA) keep clients on these."]
+    for name in STEERED_NAMES:
+        best = [e for e in result["edges"] if e["name"] == name and e["https_mbps"] > 0][:top]
+        if not best:
+            log(f"  no working edge measured for {name}; leaving it unsteered")
+            continue
+        lines.append(f"# {name}: " + ", ".join(f"{e['ip']} {e['https_mbps']} Mbps" for e in best))
+        for e in best:
+            lines.append(f"||{name}^$dnstype=A|AAAA,dnsrewrite=NOERROR;A;{e['ip']}")
+    lines.append(MARK_END)
+    return lines
+
+
+def adguard(method: str, endpoint: str, body: dict | None = None) -> dict:
+    env = Path.home() / ".config/adguardhome-sync/env"
+    password = next((l.split("=", 1)[1].strip().strip('"') for l in env.read_text().splitlines()
+                     if l.startswith("ORIGIN_PASSWORD=")), None)
+    if not password:
+        sys.exit(f"ORIGIN_PASSWORD not found in {env}")
+    import base64
+    auth = base64.b64encode(f"{ADGUARD_USER}:{password}".encode()).decode()
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(f"{ADGUARD_URL}{endpoint}", data=data, method=method,
+                                 headers={"Authorization": f"Basic {auth}",
+                                          **({"Content-Type": "application/json"} if data else {})})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        raw = r.read()
+    try:
+        return json.loads(raw)
+    except ValueError:  # set_rules / cache_clear answer with plain "OK"
+        return {}
+
+
+def apply(result: dict, top: int) -> None:
+    rules = adguard("GET", "/control/filtering/status")["user_rules"]
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    backup = STATE_DIR / f"user_rules.{time.strftime('%Y%m%dT%H%M%S')}.txt"
+    backup.write_text("\n".join(rules) + "\n")
+    block = managed_rules(result, top)
+    if MARK_BEGIN in rules and MARK_END in rules:
+        b, e = rules.index(MARK_BEGIN), rules.index(MARK_END)
+        new = rules[:b] + block + rules[e + 1:]
+    elif MARK_BEGIN in rules or MARK_END in rules:
+        sys.exit("managed block markers are unbalanced in AdGuard user rules; fix by hand")
+    else:
+        new = rules + [""] + block
+    # Everything outside the managed block must survive untouched.
+    outside = lambda rs: [r for i, r in enumerate(rs) if not (MARK_BEGIN in rs and rs.index(MARK_BEGIN) <= i <= rs.index(MARK_END))]
+    assert outside(new) == outside(rules) or outside(new) == outside(rules) + [""], "an unmanaged rule would change; aborting"
+    log(f"writing {len(new)} user rules to AdGuard (was {len(rules)}; previous set saved to {backup})…")
+    adguard("POST", "/control/filtering/set_rules", {"rules": new})
+    # Clear the negative cache; the first clear occasionally still serves the old answer.
+    adguard("POST", "/control/cache_clear")
+    adguard("POST", "/control/cache_clear")
+    (STATE_DIR / "last.json").write_text(json.dumps(result, indent=1))
+    print("\n".join(block))
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--rounds", type=int, default=2, help="HTTPS probes per edge IP (median wins; default 2)")
+    ap.add_argument("--top", type=int, default=2, help="edge IPs to publish per steered name (default 2)")
+    ap.add_argument("--json", action="store_true", help="print the full measurement as JSON")
+    ap.add_argument("--apply", action="store_true", help="rewrite the managed AdGuard rule block")
+    args = ap.parse_args()
+
+    result = probe(signed_path(), args.rounds)
+    if args.json:
+        print(json.dumps(result, indent=1))
+    else:
+        print(f"{'steered name':<36} {'edge IP':<16} {'https Mbps (median/max)':>24}")
+        for e in result["edges"]:
+            print(f"{e['name']:<36} {e['ip']:<16} {e['https_mbps']:>11}/{e['https_max_mbps']:<12}")
+        print()
+        print(f"{'mirror name (plain HTTP)':<38} {'Mbps':>6}")
+        for n in result["names"]:
+            print(f"{n['name']:<38} {n['http_mbps']:>6}")
+        print()
+        print("\n".join(managed_rules(result, args.top)))
+    if args.apply:
+        apply(result, args.top)
+
+
+if __name__ == "__main__":
+    main()

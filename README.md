@@ -14,6 +14,14 @@ scoped to the homelab host via a yadm `##h.<hostname>` alternate.
 - `bin/check-hath` — periodic health check for the Hentai@Home client
   running in k8s: restarts it when the pod is broken or silent, alerts on
   startup-failure loops.
+- `bin/bili-cdn-probe` — measures the Bilibili video CDN edges reachable
+  from the LAN and, with `--apply`, steers each mirror name to its fastest
+  edges through AdGuard DNS rewrites (a marked, regenerated rule block).
+  Overseas, Bilibili spreads a video's streams over Akamai and its cloud
+  mirrors at random, and the edge pool behind each mirror name spans an
+  order of magnitude in throughput; the plain-HTTP Akamai half used by the
+  TV and mobile apps is re-homed by the gateway's Caddyfile instead. Needs
+  `uvx` (`yt-dlp` fetches a freshly signed segment URL) and `curl`.
 
 ## Containerized jobs
 
