@@ -231,6 +231,12 @@ def apply(result: dict, top: int) -> None:
     adguard("POST", "/control/cache_clear")
     adguard("POST", "/control/cache_clear")
     (STATE_DIR / "last.json").write_text(json.dumps(result, indent=1))
+    # Append-only history: which edges were published when. A playback complaint is
+    # dated, so the first question is always whether the steering changed that day.
+    chosen = " ".join(f"{e['name'].removeprefix('upos-sz-mirror').split('.')[0]}={e['ip']}/{e['https_mbps']}"
+                      for e in result["edges"] if f";A;{e['ip']}" in "\n".join(block))
+    with (STATE_DIR / "history.log").open("a") as fh:
+        fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {chosen}\n")
     print("\n".join(block))
 
 
