@@ -28,12 +28,17 @@ scoped to the homelab host via a yadm `##h.<hostname>` alternate.
 - `dmarc-check/` — daily DMARC aggregate-report triage. Unlike the `bin/`
   scripts (host shims), this runs in a self-contained image built from
   `dmarc-check/Containerfile` by the mise `projects:sync` task and fired by
-  a quadlet `.container` + `.timer`. It fetches unread DMARC reports from the
-  Gmail inbox over IMAP, evaluates SPF/DKIM per source, silently reads +
-  archives clean ones, and for failures keeps the mail unread + tagged
-  `DMARC-Issue`, asks `claude` to triage spoofing-vs-misconfig, and mails an
-  alert. Credentials are injected at runtime (`~/.config/dmarc-check/env`);
-  claude auth is a mounted host credential. See `dmarc-check/dmarc_check.py`.
+  a `podman run` oneshot service + `.timer`. A Gmail filter labels incoming
+  reports `DMARC/Reports` outside the inbox; the job triages the unread
+  ones over IMAP. A senders inventory (`senders.json`: the domain's own
+  DKIM/SPF identities and networks, plus notes) decides deterministically
+  whether a failing record is the domain's own mail; `claude` gets the raw
+  per-record auth results and the inventory and returns ACTION or NOTICE,
+  and can raise but not lower that floor. Every report with failures yields
+  a summary mail whose `List-Id` names its tier, so Gmail files notices
+  outside the inbox and lets only actions in. Credentials are injected at
+  runtime (`~/.config/dmarc-check/env`); claude auth is a mounted host
+  credential. See `dmarc-check/dmarc_check.py`.
 - `adguardhome-sync/` — pin wrapper for
   [bakito/adguardhome-sync](https://github.com/bakito/adguardhome-sync),
   keeping the AdGuard replica on the gateway in sync with the primary.
