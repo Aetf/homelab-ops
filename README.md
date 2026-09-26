@@ -15,13 +15,16 @@ scoped to the homelab host via a yadm `##h.<hostname>` alternate.
   running in k8s: restarts it when the pod is broken or silent, alerts on
   startup-failure loops.
 - `bin/bili-cdn-probe` — measures the Bilibili video CDN edges reachable
-  from the LAN and, with `--apply`, steers each mirror name to its fastest
-  edges through AdGuard DNS rewrites (a marked, regenerated rule block).
-  Overseas, Bilibili spreads a video's streams over Akamai and its cloud
-  mirrors at random, and the edge pool behind each mirror name spans an
-  order of magnitude in throughput; the plain-HTTP Akamai half used by the
-  TV and mobile apps is re-homed by the gateway's Caddyfile instead. Needs
-  `uvx` (`yt-dlp` fetches a freshly signed segment URL) and `curl`.
+  from the LAN on the cache-miss path (fresh ranges of moderately watched
+  videos; cache hits are fast everywhere) and, with `--apply`, steers each
+  mirror name to its fastest edges through AdGuard DNS rewrites (a marked,
+  regenerated rule block), or answers NXDOMAIN for a name whose streams
+  carry an Akamai backup when Akamai is decisively faster. Overseas,
+  Bilibili spreads a video's streams over Akamai and its cloud mirrors at
+  random, and the edge pool behind each mirror name spans an order of
+  magnitude in throughput; the plain-HTTP Akamai half used by the TV app is
+  re-homed by the gateway's Caddyfile instead. Needs `uvx` (`yt-dlp` fetches
+  freshly signed stream URLs) and `curl`.
 
 ## Containerized jobs
 

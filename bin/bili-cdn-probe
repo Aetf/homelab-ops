@@ -13,24 +13,43 @@ without touching clients:
   * DNS: answer each mirror name with the IPs of its own edges that measure
     fastest from here (this script, --apply). Edges only serve their own name
     (foreign SNI is refused), so pools never mix.
-  * HTTP: the TV/mobile apps fetch Akamai's share over plain HTTP; the
+  * HTTP: the TV app fetches Akamai's share over plain HTTP (the phone app
+    uses HTTPS, which caddy only passes through by SNI); the
     gw-config Caddyfile re-homes those requests to a mirror (not this
     script). The URL signature (upsig) covers only the query parameters
     listed in uparams, never the host, and mirrors ignore Akamai's hdnts.
 
-How it measures: fetch a freshly signed segment URL via yt-dlp, gather each
-name's candidate IPs from two public DoH resolvers plus the local resolver
-(the current answer stays a candidate), then time a Range GET of PROBE_BYTES
-against every IP with that name as SNI. Web-signed URLs are refused without a
-browser User-Agent plus a bilibili.com Referer, so both are sent. Nothing
-goes through a proxy from the environment: that would measure the proxy.
+What it ranks is the cache-miss path. Popular files are cached on every
+edge and all of them serve those at 50-100 Mbps, so hits never tell edges
+apart; what a viewer of an unpopular video (or of a seek into a cold part of
+any video) feels is how fast an edge pulls a segment it does not have. That
+differs by more than an order of magnitude within one name's pool: G-Core
+edges behind mirrorcosov have served cold 1080p segments at 1-4 Mbps from one
+IP and 5-25 from another while Akamai served the same segments at 27-100
+(2026-09). So the sample is a moderately watched video, one that viewers in
+China keep warm in Bilibili's origin-side caches but that is too obscure to
+sit on overseas edges, picked at random from Bilibili search; and every
+single Range GET lands on its own previously unrequested offset, since
+reusing one, even on a sibling edge that may share a parent cache, would
+measure a hit. A brand-new, unwatched upload is the wrong sample: its
+segments come from the origin across the Pacific, every edge and Akamai
+alike manage 1-3 Mbps, and the ranking measures the origin, not the edges.
 
-Caveat: the sample is a popular video, so this ranks the cache-hit path. On a
-miss (first viewer of a segment in the region) the Alibaba edges behind
-mirroraliov drop to single-digit Mbps whichever IP answers, while the G-Core
-edges behind mirrorcosov and Akamai fetch from origin at tens of Mbps; DNS
-cannot move a name off its own edges, so the miss path is what the caddy
-re-homing (cosov first) and a future multi-connection proxy address.
+How it measures: pick that sample and get a freshly signed URL for its
+largest Akamai-hosted stream via yt-dlp (the path also works on every
+bilivideo mirror, and Akamai only accepts its own hdnts-signed paths); gather
+each name's candidate IPs from two public DoH resolvers plus the local
+resolver (the current answer stays a candidate); then time PROBE_BYTES Range
+GETs against every IP with that name as SNI, and against Akamai the way LAN
+clients reach it (the local resolver, i.e. through the gateway's caddy).
+Web-signed URLs are refused without a browser User-Agent plus a bilibili.com
+Referer, so both are sent. Nothing goes through a proxy from the environment:
+that would measure the proxy.
+
+Steering: each name gets its fastest edges, unless it is one whose streams
+carry an Akamai backupUrl and Akamai beats its best edge by AKAM_MARGIN; then
+the name answers NXDOMAIN and players fall back to Akamai without a playback
+gap (tried on the TV app, 2026-09-18).
 
 --apply rewrites the managed block of AdGuard user rules on the primary
 instance (adguardhome-sync copies it to the replica); the previous rule set is
@@ -44,6 +63,7 @@ import argparse
 import socket
 import json
 import os
+import random
 import statistics
 import subprocess
 import sys
@@ -51,6 +71,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 # bilivideo mirror names that accept a host-swapped upos path (206 as of
@@ -71,13 +93,35 @@ STEERED_NAMES = [
     "upos-sz-mirrorcosov.bilivideo.com",
     "upos-sz-mirroraliov.bilivideo.com",
 ]
-# A long-lived, public, high-bitrate video: Bilibili's own 4K120 demo.
-SAMPLE_VIDEO = "https://www.bilibili.com/video/BV1fK4y1t7hj"
-DOH = ("https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query")
+AKAM_NAME = "upos-hz-mirrorakam.akamaized.net"
+# Names whose streams always carry an Akamai backupUrl: playurl hands out
+# base/backup pairs split across cosov and Akamai (observed 2026-09). Only such
+# a name may be answered NXDOMAIN, or its players would lose the stream.
+AKAM_BACKED = {"upos-sz-mirrorcosov.bilivideo.com"}
+# How much faster Akamai must be than a name's best edge before that name is
+# dropped in its favour: the fallback costs one failed lookup per stream and
+# puts that share of playback behind the gateway's caddy as well, and the
+# margin keeps run-to-run noise from flipping the answer daily.
+AKAM_MARGIN = 1.25
+SEARCH_API = "https://api.bilibili.com/x/web-interface/search/type"
+SEARCH_WORDS = ("vlog", "日常", "游戏", "教程", "旅行", "美食", "开箱", "音乐")
+# Plays band and minimum age of a sample: watched enough to be warm behind the
+# edges, obscure enough not to be cached on them (see the module docstring).
+SAMPLE_PLAYS = (5_000, 500_000)
+SAMPLE_MIN_AGE_DAYS = 7
+# Last resort when search yields nothing usable. Popular, so every offset is a
+# cache hit and the ranking degrades to the hit path; NXDOMAIN is then withheld.
+FALLBACK_VIDEO = "https://www.bilibili.com/video/BV1fK4y1t7hj"
+# Samples per run. How warm a video is behind the edges varies from video to
+# video; alternating the GETs of every edge over several samples keeps one
+# unlucky pick from deciding the steering.
+SAMPLES = 2
+DOH = ("https://1.1.1.1/dns-query", "https://8.8.8.8/resolve")  # both speak dns-json
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
 REFERER = "https://www.bilibili.com/"
-PROBE_BYTES = 4 * 1024 * 1024
+PROBE_BYTES = 2 * 1024 * 1024
+PROBE_TIMEOUT_S = 8
 ADGUARD_URL = "http://10.0.5.3"
 ADGUARD_USER = "sync"
 MARK_BEGIN = "# >>> bili-cdn-probe managed block (regenerated; edit the script, not this)"
@@ -92,19 +136,100 @@ def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def signed_path() -> str:
-    """Path+query of a freshly signed segment URL (host stripped)."""
-    log(f"fetching a signed segment URL via yt-dlp ({SAMPLE_VIDEO})…")
-    out = subprocess.run(["uvx", "yt-dlp", "--no-warnings", "-q", "-j", SAMPLE_VIDEO],
+@dataclass
+class Sample:
+    url: str       # the video page
+    path: str      # path+query of the signed stream, host stripped
+    size: int      # estimated stream size in bytes
+    cold: bool     # False only for FALLBACK_VIDEO
+
+
+class Ranges:
+    """Hands out (path, offset) pairs, alternating over the samples. Every
+    PROBE_BYTES-aligned offset is handed out at most once per run, so no
+    measurement lands on a range an earlier GET warmed; once all are spent,
+    draw() returns None and the remaining endpoints get fewer GETs."""
+
+    def __init__(self, samples: list[Sample]):
+        self.samples = samples
+        self.free = []
+        for smp in samples:
+            # size is estimated from the average bitrate; stay clear of the real end.
+            slots = [i * PROBE_BYTES for i in range(max(1, int(smp.size * 0.9) // PROBE_BYTES))]
+            random.shuffle(slots)
+            self.free.append(slots)
+        self.turn = 0
+        self.short = 0
+
+    def draw(self) -> tuple[str, int] | None:
+        for _ in range(len(self.samples)):
+            i = self.turn % len(self.samples)
+            self.turn += 1
+            if self.free[i]:
+                return self.samples[i].path, self.free[i].pop()
+        self.short += 1
+        return None
+
+
+def candidate_videos() -> list[str]:
+    """Moderately watched videos from a random relevance-ranked search page."""
+    words = random.sample(SEARCH_WORDS, 3)
+    now, found = time.time(), []
+    for word in words:
+        q = urllib.parse.urlencode({"search_type": "video", "keyword": word, "order": "totalrank",
+                                    "duration": 2, "page": random.randint(1, 5)})  # duration 2: 10-30 min
+        req = urllib.request.Request(f"{SEARCH_API}?{q}", headers={
+            "User-Agent": UA, "Referer": REFERER, "Cookie": f"buvid3={uuid.uuid4()}infoc"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                results = (json.load(r).get("data") or {}).get("result") or []
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            log(f"  search for {word!r} failed: {e}")
+            continue
+        for v in results:
+            age_days = (now - v.get("pubdate", now)) / 86400
+            if age_days >= SAMPLE_MIN_AGE_DAYS and SAMPLE_PLAYS[0] <= v.get("play", 0) <= SAMPLE_PLAYS[1]:
+                found.append(f"https://www.bilibili.com/video/{v['bvid']}")
+    random.shuffle(found)
+    return found
+
+
+def signed_stream(video: str) -> tuple[str, int] | None:
+    """(path+query, estimated bytes) of the video's largest Akamai-hosted stream."""
+    out = subprocess.run(["uvx", "yt-dlp", "--no-warnings", "-q", "-j", "--playlist-items", "1", video],
                          capture_output=True, text=True, timeout=180)
     if out.returncode != 0:
-        sys.exit(f"yt-dlp failed: {out.stderr.strip()[-400:]}")
-    info = json.loads(out.stdout)
+        log(f"  yt-dlp failed for {video}: {out.stderr.strip()[-200:]}")
+        return None
+    info = json.loads(out.stdout.splitlines()[0])  # multi-part videos: part 1
+    best = None
     for f in info["formats"]:
-        u = urllib.parse.urlparse(f["url"])
-        if u.netloc.startswith("upos-") and (f.get("height") or 0) >= 480:
-            return urllib.parse.urlunparse(u._replace(scheme="", netloc=""))
-    sys.exit("no upos video format in yt-dlp output")
+        u = urllib.parse.urlparse(f.get("url", ""))
+        if u.netloc != AKAM_NAME:
+            continue
+        size = int(f.get("filesize") or (f.get("tbr") or 0) * 1000 / 8 * (info.get("duration") or 0))
+        if best is None or size > best[1]:
+            best = (urllib.parse.urlunparse(u._replace(scheme="", netloc="")), size)
+    return best
+
+
+def pick_samples() -> list[Sample]:
+    log(f"looking for {SAMPLES} moderately watched sample videos (Bilibili search)…")
+    found: list[Sample] = []
+    for video in candidate_videos()[:5 * SAMPLES]:
+        log(f"  fetching signed stream URLs via yt-dlp ({video})…")
+        got = signed_stream(video)
+        if got and got[1] >= 32 * PROBE_BYTES:
+            found.append(Sample(video, got[0], got[1], cold=True))
+            if len(found) == SAMPLES:
+                return found
+    if found:
+        return found
+    log(f"  no usable sample from search; falling back to {FALLBACK_VIDEO} (cache-hit ranking only)")
+    got = signed_stream(FALLBACK_VIDEO)
+    if not got:
+        sys.exit("no Akamai-hosted stream in the fallback video either")
+    return [Sample(FALLBACK_VIDEO, got[0], got[1], cold=False)]
 
 
 def resolve_a(name: str) -> list[str]:
@@ -127,62 +252,99 @@ def resolve_a(name: str) -> list[str]:
     return sorted(set(ips))
 
 
-def timed_get(url: str, resolve: str | None = None) -> tuple[int, float]:
-    """(http_code, Mbps) for a Range GET of PROBE_BYTES."""
+def timed_get(url: str, offset: int, resolve: str | None = None) -> tuple[int, float, float]:
+    """(http_code, Mbps, TTFB ms) for a PROBE_BYTES Range GET at offset. An edge too
+    slow to finish within PROBE_TIMEOUT_S is scored on what it delivered by then."""
     # --noproxy: a proxy in the environment would measure the proxy, not the edge.
     cmd = ["curl", "-s", "-o", "/dev/null", "--noproxy", "*", "-A", UA, "-H", f"Referer: {REFERER}",
-           "-r", f"0-{PROBE_BYTES - 1}", "--max-time", "25",
-           "-w", "%{http_code} %{size_download} %{speed_download}"]
+           "-r", f"{offset}-{offset + PROBE_BYTES - 1}", "--max-time", str(PROBE_TIMEOUT_S),
+           "-w", "%{http_code} %{size_download} %{time_total} %{time_starttransfer} %{time_appconnect}"]
     if resolve:
         cmd += ["--resolve", resolve]
     cmd.append(url)
     out = subprocess.run(cmd, capture_output=True, text=True).stdout.split()
-    code = int(out[0]) if out and out[0].isdigit() else 0
-    speed = float(out[2]) if len(out) == 3 else 0.0
-    if code != 206 or float(out[1]) < PROBE_BYTES:
-        return code, 0.0
-    return code, speed * 8 / 1e6
+    if len(out) != 5 or out[0] != "206" or float(out[1]) <= 0:
+        return (int(out[0]) if out and out[0].isdigit() else 0), 0.0, 0.0
+    size, total, ttfb, tls = (float(x) for x in out[1:])
+    # Rate over the transfer itself: TCP+TLS setup (a LAN hop for Akamai via caddy,
+    # a WAN round trip for the rest) is not what differs between edges.
+    return 206, size * 8 / 1e6 / max(total - tls, 1e-3), (ttfb - tls) * 1000
 
 
-def probe(path: str, rounds: int) -> dict:
+def timed_series(base: str, ranges: Ranges, rounds: int, resolve: str | None = None) -> dict:
+    """`rounds` GETs of base+path, each on its own fresh range, scored by their
+    harmonic mean (bytes over time): a player stalls on its slowest segments,
+    and a median would hide exactly those."""
+    speeds, ttfbs = [], []
+    for _ in range(rounds):
+        drawn = ranges.draw()
+        if drawn is None:
+            break
+        code, mbps, ttfb = timed_get(base + drawn[0], drawn[1], resolve)
+        speeds.append(mbps)
+        ttfbs.append(ttfb)
+        if code != 206:
+            break
+    if not speeds:  # out of fresh ranges: unmeasured, never steered to
+        return {"mbps": 0.0, "min_mbps": 0.0, "ttfb_ms": 0}
+    return {"mbps": round(statistics.harmonic_mean(speeds), 1), "min_mbps": round(min(speeds), 1),
+            "ttfb_ms": round(statistics.median(ttfbs))}
+
+
+def probe(samples: list[Sample], rounds: int) -> dict:
     """Measure every candidate edge IP of every steered name over HTTPS with that
-    name as SNI/Host (edges only serve their own name), and every mirror name
-    over plain HTTP (what a proxy resolving through an unsteered resolver gets)."""
+    name as SNI/Host (edges only serve their own name), Akamai the way LAN
+    clients reach it, and every mirror name over plain HTTP (what a proxy
+    resolving through an unsteered resolver gets). Each GET takes a fresh range."""
+    ranges = Ranges(samples)
     pools = {name: resolve_a(name) for name in STEERED_NAMES}
-    total = sum(len(v) for v in pools.values())
-    log(f"probing {total} edge IPs × {rounds} rounds over HTTPS ({PROBE_BYTES >> 20} MiB each; a few minutes)…")
+    total = sum(len(v) for v in pools.values()) + 1
+    log(f"probing {total} endpoints × {rounds} cold ranges over HTTPS "
+        f"({PROBE_BYTES >> 20} MiB or {PROBE_TIMEOUT_S} s each; up to {total * rounds * PROBE_TIMEOUT_S // 60 + 1} min)…")
+    akamai = timed_series(f"https://{AKAM_NAME}", ranges, rounds)
+    log(f"  {AKAM_NAME} via caddy: {akamai['mbps']} Mbps")
     edges = []
     for name, ips in pools.items():
         for ip in ips:
-            speeds = []
-            for _ in range(rounds):
-                code, mbps = timed_get(f"https://{name}{path}", resolve=f"{name}:443:{ip}")
-                speeds.append(mbps)
-                if code != 206:
-                    break
-            edges.append({"name": name, "ip": ip, "https_mbps": round(statistics.median(speeds), 1),
-                          "https_max_mbps": round(max(speeds), 1)})
+            m = timed_series(f"https://{name}", ranges, rounds, resolve=f"{name}:443:{ip}")
+            log(f"  {name} {ip}: {m['mbps']} Mbps")
+            edges.append({"name": name, "ip": ip, **m})
     log(f"probing {len(MIRRORS)} mirror names over plain HTTP…")
     names = []
     for name in MIRRORS:
         own = resolve_a(name)[:2]
-        mbps = max((timed_get(f"http://{name}{path}", resolve=f"{name}:80:{ip}")[1] for ip in own), default=0.0)
+        mbps = 0.0
+        for ip in own:
+            drawn = ranges.draw()
+            if drawn is not None:
+                mbps = max(mbps, timed_get(f"http://{name}{drawn[0]}", drawn[1], resolve=f"{name}:80:{ip}")[1])
         names.append({"name": name, "http_mbps": round(mbps, 1)})
-    edges.sort(key=lambda e: (e["name"], -e["https_mbps"], -e["https_max_mbps"]))
+    if ranges.short:
+        log(f"  samples too short for one fresh range per GET; {ranges.short} GETs skipped")
+    edges.sort(key=lambda e: (e["name"], -e["mbps"], -e["min_mbps"]))
     names.sort(key=lambda n: n["http_mbps"], reverse=True)
-    return {"measured_at": int(time.time()), "probe_bytes": PROBE_BYTES, "rounds": rounds,
-            "edges": edges, "names": names}
+    return {"measured_at": int(time.time()), "samples": [smp.url for smp in samples],
+            "sample_cold": all(smp.cold for smp in samples), "probe_bytes": PROBE_BYTES,
+            "rounds": rounds, "akamai": akamai, "edges": edges, "names": names}
 
 
 def managed_rules(result: dict, top: int) -> list[str]:
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(result["measured_at"]))
-    lines = [MARK_BEGIN, f"# Fastest edges per name measured {when}; A-only answers (empty AAAA) keep clients on these."]
+    kind = "cold-range" if result["sample_cold"] else "cache-hit (no fresh sample found)"
+    akam = result["akamai"]["mbps"]
+    lines = [MARK_BEGIN, f"# {kind} throughput measured {when}; Akamai via caddy {akam} Mbps.",
+             "# A-only answers (empty AAAA) keep clients on the listed edges."]
     for name in STEERED_NAMES:
-        best = [e for e in result["edges"] if e["name"] == name and e["https_mbps"] > 0][:top]
+        best = [e for e in result["edges"] if e["name"] == name and e["mbps"] > 0][:top]
+        best_mbps = best[0]["mbps"] if best else 0.0
+        if name in AKAM_BACKED and result["sample_cold"] and akam > 0 and akam >= AKAM_MARGIN * best_mbps:
+            lines.append(f"# {name}: NXDOMAIN, players fall back to Akamai ({akam} Mbps vs best own edge {best_mbps})")
+            lines.append(f"||{name}^$dnsrewrite=NXDOMAIN")
+            continue
         if not best:
             log(f"  no working edge measured for {name}; leaving it unsteered")
             continue
-        lines.append(f"# {name}: " + ", ".join(f"{e['ip']} {e['https_mbps']} Mbps" for e in best))
+        lines.append(f"# {name}: " + ", ".join(f"{e['ip']} {e['mbps']} Mbps" for e in best))
         for e in best:
             lines.append(f"||{name}^$dnstype=A|AAAA,dnsrewrite=NOERROR;A;{e['ip']}")
     lines.append(MARK_END)
@@ -233,8 +395,12 @@ def apply(result: dict, top: int) -> None:
     (STATE_DIR / "last.json").write_text(json.dumps(result, indent=1))
     # Append-only history: which edges were published when. A playback complaint is
     # dated, so the first question is always whether the steering changed that day.
-    chosen = " ".join(f"{e['name'].removeprefix('upos-sz-mirror').split('.')[0]}={e['ip']}/{e['https_mbps']}"
-                      for e in result["edges"] if f";A;{e['ip']}" in "\n".join(block))
+    short = lambda name: name.removeprefix("upos-sz-mirror").split(".")[0]
+    text = "\n".join(block)
+    chosen = " ".join(
+        [f"{short(e['name'])}={e['ip']}/{e['mbps']}" for e in result["edges"] if f";A;{e['ip']}" in text]
+        + [f"{short(n)}=NXDOMAIN" for n in STEERED_NAMES if f"||{n}^$dnsrewrite=NXDOMAIN" in text]
+        + [f"akam={result['akamai']['mbps']}", "cold" if result["sample_cold"] else "HOT-FALLBACK"])
     with (STATE_DIR / "history.log").open("a") as fh:
         fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {chosen}\n")
     print("\n".join(block))
@@ -242,19 +408,22 @@ def apply(result: dict, top: int) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--rounds", type=int, default=2, help="HTTPS probes per edge IP (median wins; default 2)")
+    ap.add_argument("--rounds", type=int, default=4, help="cold-range GETs per endpoint, alternating samples (default 4)")
     ap.add_argument("--top", type=int, default=2, help="edge IPs to publish per steered name (default 2)")
     ap.add_argument("--json", action="store_true", help="print the full measurement as JSON")
     ap.add_argument("--apply", action="store_true", help="rewrite the managed AdGuard rule block")
     args = ap.parse_args()
 
-    result = probe(signed_path(), args.rounds)
+    result = probe(pick_samples(), args.rounds)
     if args.json:
         print(json.dumps(result, indent=1))
     else:
-        print(f"{'steered name':<36} {'edge IP':<16} {'https Mbps (median/max)':>24}")
+        print(f"samples: {' '.join(result['samples'])} ({'cold' if result['sample_cold'] else 'HOT fallback'})")
+        print(f"{'endpoint':<36} {'edge IP':<16} {'Mbps hmean/min':>16} {'TTFB ms':>8}")
+        a = result["akamai"]
+        print(f"{AKAM_NAME:<36} {'(via caddy)':<16} {a['mbps']:>8}/{a['min_mbps']:<7} {a['ttfb_ms']:>8}")
         for e in result["edges"]:
-            print(f"{e['name']:<36} {e['ip']:<16} {e['https_mbps']:>11}/{e['https_max_mbps']:<12}")
+            print(f"{e['name']:<36} {e['ip']:<16} {e['mbps']:>8}/{e['min_mbps']:<7} {e['ttfb_ms']:>8}")
         print()
         print(f"{'mirror name (plain HTTP)':<38} {'Mbps':>6}")
         for n in result["names"]:
