@@ -7,7 +7,12 @@
 #   - client silent for hours (the H@H server probes the client regularly,
 #     so a quiet log means the client lost its server connection)
 #                                             -> rollout restart
-#   - startup-notification loop (e.g. FAIL_INITIAL_SPEEDTEST)
+#   - FAIL_CONNECT_TEST at startup while the public endpoint answers now
+#     (the client tested before the inbound path was up, e.g. right after a
+#     k3s restart; it never retries the test on its own)
+#                                             -> rollout restart
+#   - any other startup failure (e.g. FAIL_INITIAL_SPEEDTEST), or
+#     FAIL_CONNECT_TEST with the endpoint still unreachable
 #                                             -> alert only; a restart just
 #                                                repeats the same failure
 # Restarts and alerts are rate-limited via stamp files in $STATE_DIR.
@@ -63,11 +68,24 @@ if [[ $phase != Running || $ready != True ]]; then
     exit 0
 fi
 
-recent=$(kubectl -n "$NS" logs "$POD" --tail=30 2>/dev/null || true)
-if grep -q 'Startup Failure' <<<"$recent"; then
-    if cooled_down last-startup-failure-alert; then
-        notify "startup failure loop, restart will not help" \
-            "$(grep 'Startup Failure' <<<"$recent" | tail -3)"
+# endpoint_reachable -> succeeds when the service's public address answers
+# HTTPS at all (any status code); the probe leaves the home WAN and comes
+# back through the same LoadBalancer path the H@H server uses
+endpoint_reachable() {
+    local addr
+    addr=$(kubectl -n "$NS" get svc -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.status.loadBalancer.ingress[0].ip}:{.spec.ports[0].port}{end}')
+    curl -sk -o /dev/null --max-time 15 "https://$addr/"
+}
+
+# The startup outcome sits near the top of the container log; the tail is
+# request lines once the client runs (or strays from scanners when it doesn't).
+startup=$(kubectl -n "$NS" logs "$POD" -c hath --limit-bytes=20000 2>/dev/null || true)
+failure=$(grep -m1 'Startup Failure' <<<"$startup" || true)
+if [[ -n $failure ]]; then
+    if [[ $failure == *FAIL_CONNECT_TEST* ]] && endpoint_reachable; then
+        restart_deploy "startup connect test failed but the endpoint is reachable now"
+    elif cooled_down last-startup-failure-alert; then
+        notify "startup failure loop, restart will not help" "$failure"
     else
         echo "startup failure loop (already alerted)"
     fi

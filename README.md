@@ -12,8 +12,9 @@ scoped to the homelab host via a yadm `##h.<hostname>` alternate.
 - `bin/gw-backup-pull` — weekly pull of UniFi/AdGuard backups from the
   gateway into `~/.config/gw-config/backups`.
 - `bin/check-hath` — periodic health check for the Hentai@Home client
-  running in k8s: restarts it when the pod is broken or silent, alerts on
-  startup-failure loops.
+  running in k8s: restarts it when the pod is broken or silent, or when its
+  startup connectivity test failed but the public endpoint answers now;
+  alerts on other startup failures.
 - `bin/bili-cdn-probe` — measures the Bilibili video CDN edges reachable
   from the LAN on the cache-miss path (fresh ranges of moderately watched
   videos; cache hits are fast everywhere) and, with `--apply`, steers each
