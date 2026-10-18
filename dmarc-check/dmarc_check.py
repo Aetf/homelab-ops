@@ -48,8 +48,11 @@ State ($STATE_DIR/state.json): `processed` {report key -> verdict} makes a
 re-run after a partial failure (mail sent, flag not stored) not mail twice;
 `cooldown` {domain -> epoch} is the ACTION rate limit.
 
-Standard library only; runtime inputs are the env vars below, the mounted
-senders inventory, a mounted claude credential, and the state dir.
+Standard library only; runtime inputs are the env vars below (plus
+ANTHROPIC_API_KEY, read by `claude -p` itself), the mounted senders
+inventory, and the state dir. The key belongs to the Console organization
+linked to the Max plan, so the calls draw on its monthly API credit instead
+of the subscription's usage limits.
 """
 
 import email

@@ -41,8 +41,8 @@ scoped to the homelab host via a yadm `##h.<hostname>` alternate.
   and can raise but not lower that floor. Every report with failures yields
   a summary mail whose `List-Id` names its tier, so Gmail files notices
   outside the inbox and lets only actions in. Credentials are injected at
-  runtime (`~/.config/dmarc-check/env`); claude auth is a mounted host
-  credential. See `dmarc-check/dmarc_check.py`.
+  runtime (`~/.config/dmarc-check/env`), including the `ANTHROPIC_API_KEY`
+  that `claude -p` authenticates with. See `dmarc-check/dmarc_check.py`.
 - `adguardhome-sync/` — pin wrapper for
   [bakito/adguardhome-sync](https://github.com/bakito/adguardhome-sync),
   keeping the AdGuard replica on the gateway in sync with the primary.
