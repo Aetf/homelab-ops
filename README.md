@@ -9,8 +9,20 @@ scoped to the homelab host via a yadm `##h.<hostname>` alternate.
 - `bin/check-gw` — daily gateway health check: config drift on the UDM-SE
   (via `~/.config/gw-config/deploy.sh --check`) and TLS certificate expiry
   for the internal reverse proxy; mails a report when something is off.
-- `bin/gw-backup-pull` — weekly pull of UniFi/AdGuard backups from the
-  gateway into `~/.config/gw-config/backups`.
+- `bin/check-gateway` — daily gateway health check against the cluster's
+  declaration of the device: relays the findings of `gateway-health`, which
+  the cluster renders onto the UDM-SE; probes each certificate the
+  reverse proxy obtains from the LAN (served, verified for its name, three
+  weeks or more left); and checks that the controller's autobackups are
+  copied off the device and recent. Mails each finding with the playbook
+  that answers it, an entry of §3 of
+  [kluster's gateway document](https://github.com/Aetf/kluster/blob/main/docs/physical/gateway.md).
+- `bin/gateway-backup-pull` — weekly pull of the UniFi controller's
+  autobackups, and of each AdGuard resolver's `AdGuardHome.yaml` until the
+  cluster declares their configuration, from the gateway into
+  `~/.config/gw-backups`. It reads the same paths before the gateway's
+  cutover to the declared layout and after it; each transfer stands alone,
+  and one that fails is named on stderr and in the exit status.
 - `bin/check-hath` — periodic health check for the Hentai@Home client
   running in k8s: restarts it when the pod is broken or silent, or when its
   startup connectivity test failed but the public endpoint answers now;

@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Weekly copy of the gateway's (UDM-SE) backups into ~/.config/gw-backups: the
+# controller's autobackups, and each resolver's AdGuardHome.yaml until the dns
+# stack declares the resolvers' configuration (kluster's sources-of-truth.md
+# R2). The paths read are the same on the layout before the cutover and on the
+# declared one (kluster's physical/gateway.md §1.6), so the job runs across the
+# window and across a rollback. Committing the copies is left to the operator:
+# changes show up in yadm status.
+#
+# Each transfer stands alone: one that fails is named on stderr and in the exit
+# status, and the others still run.
+set -uo pipefail
+DEST=$HOME/.config/gw-backups
+# rsync's sessions take the same options: no prompt, and a bounded connect.
+export RSYNC_RSH='ssh -o BatchMode=yes -o ConnectTimeout=10'
+failed=()
+
+# Runs one transfer, named for the report; its own errors stay on stderr.
+transfer() {
+    local name=$1
+    shift
+    if ! "$@"; then
+        echo "gateway-backup-pull: $name: transfer failed" >&2
+        failed+=("$name")
+    fi
+}
+
+# The controller's autobackups. The path is the controller's own.
+pull_unifi() {
+    mkdir -p "$DEST/unifi" &&
+        rsync -rt gw:/data/unifi/data/backup/autobackup/ "$DEST/unifi/"
+}
+
+# One resolver's AdGuardHome.yaml. Transitional, and it leaves with this
+# transfer when R2 flips: the declared state directory where it exists on the
+# device, otherwise /data/<name>/, where the file sits before the window and
+# after a rollback.
+pull_resolver() {
+    local name=$1 src
+    src=$($RSYNC_RSH gw "if [ -d /data/custom/machines/$name/state ]; then echo /data/custom/machines/$name/state; else echo /data/$name; fi" </dev/null) &&
+        [[ -n $src ]] &&
+        mkdir -p "$DEST/$name" &&
+        rsync -t "gw:$src/AdGuardHome.yaml" "$DEST/$name/AdGuardHome.yaml" &&
+        echo "$name: from $src"
+}
+
+transfer unifi pull_unifi
+# alice is the adguardhome-sync origin; bob's configuration is derived from
+# it by the sync, and kept for a whole-instance restore.
+for resolver in adguard-alice adguard-bob; do
+    transfer "$resolver" pull_resolver "$resolver"
+done
+
+echo "unifi: $(find "$DEST/unifi" -maxdepth 1 -name '*.unf' | wc -l) autobackup(s) in $DEST/unifi"
+if ((${#failed[@]})); then
+    echo "gateway-backup-pull: ${#failed[@]} transfer(s) failed: ${failed[*]}" >&2
+    exit 1
+fi

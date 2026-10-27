@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Daily read of the gateway (UDM-SE) from the homelab host: the device's own
+# verdict from gateway-health, the proxy's certificates as a LAN host sees
+# them, and how fresh the copies of the controller's autobackups are. Mails
+# each finding with the playbook that answers it; a healthy run writes one line
+# to the journal. The contract this reads is kluster's physical/gateway.md §1.6,
+# and every playbook named here is a bullet of its §3.
+#
+# A finding is one line, `<subject>: <state> — playbook: physical/gateway.md
+# §3, "<title>"`, the shape gateway-health prints, so the device's findings are
+# relayed as they are. Each reading stands alone: one that cannot be taken is a
+# finding of its own, and the others still run.
+set -uo pipefail
+MAILTO=pfyu817@gmail.com
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 gw)
+HEALTH=/data/custom/bin/gateway-health
+AUTOBACKUP=/data/unifi/data/backup/autobackup
+COPIES=$HOME/.config/gw-backups/unifi
+CERT_MIN_DAYS=21
+COPIED_AFTER_DAYS=8 # a pull period and a day
+NEWEST_MAX_DAYS=32  # the controller's monthly schedule, a console setting
+
+DID_NOT_RUN='The check did not run'
+NOT_RENEWING="The proxy's certificate is not renewing"
+NOT_COPIED='The autobackup is not copied off the device'
+
+findings=()
+finding() {
+    findings+=("$(printf '%s: %s — playbook: physical/gateway.md §3, "%s"' "$1" "$2" "$3")")
+}
+
+# Runs a command on the device: its stdout in $out, its exit status in
+# $status, and the last line written to stderr in $err, which is what a
+# session that failed is reported by.
+errfile=$(mktemp)
+trap 'rm -f "$errfile"' EXIT
+remote() {
+    out=$("${SSH[@]}" "$@" </dev/null 2>"$errfile")
+    status=$?
+    err=$(awk 'NF { last = $0 } END { print last }' "$errfile")
+}
+
+# How a session that did not deliver its answer reads in a finding.
+session_state() {
+    if ((status == 255)); then
+        echo "no session to gw (${err:-ssh exit 255})"
+    else
+        echo "exit $status${err:+, $err}"
+    fi
+}
+
+# 1. The device read against its declaration. Its findings are relayed line by
+# line; an exit that is not 0 with nothing on stdout means it did not run.
+remote "$HEALTH"
+if [[ -n ${out//[[:space:]]/} ]]; then
+    while IFS= read -r line; do
+        [[ -n ${line//[[:space:]]/} ]] && findings+=("$line")
+    done <<<"$out"
+elif ((status != 0)); then
+    finding gateway-health "$(session_state)" "$DID_NOT_RUN"
+fi
+
+# 2. Each certificate the declared proxy obtains, probed from the LAN at the
+# proxy's address with the name as SNI: served, verified for the name, and
+# CERT_MIN_DAYS or more left. One probe per certificate, because a renewal
+# fails per zone. gateway-health --certificates prints `<address> <name>` per
+# line; anything else is not taken as an argument to openssl.
+probed=0
+nearest=
+probe() {
+    local address=$1 name=$2 connect=$1 reply status reason end left
+    [[ $address == *:* ]] && connect="[$address]"
+    reply=$(timeout 10 openssl s_client -connect "$connect:443" -servername "$name" \
+        -verify_hostname "$name" -verify_return_error </dev/null 2>&1)
+    status=$?
+    if ((status == 124)); then
+        finding "$name at $address" "no TLS answer within 10s" "$NOT_RENEWING"
+        return
+    fi
+    if ((status != 0)); then
+        reason=$(grep -m1 -E 'verify error:|:error:' <<<"$reply")
+        finding "$name at $address" "not served or not verified (${reason:-openssl exit $status})" "$NOT_RENEWING"
+        return
+    fi
+    end=$(openssl x509 -noout -enddate 2>/dev/null <<<"$reply")
+    end=${end#notAfter=}
+    if [[ -z $end ]]; then
+        finding "$name at $address" "no certificate in the handshake" "$NOT_RENEWING"
+        return
+    fi
+    left=$((($(date -d "$end" +%s) - $(date +%s)) / 86400))
+    if ((left < CERT_MIN_DAYS)); then
+        finding "$name at $address" "expires in ${left}d ($end)" "$NOT_RENEWING"
+        return
+    fi
+    probed=$((probed + 1))
+    if [[ -z $nearest ]] || ((left < nearest)); then
+        nearest=$left
+    fi
+}
+
+remote "$HEALTH" --certificates
+if ((status != 0)); then
+    finding 'gateway-health --certificates' "$(session_state)" "$DID_NOT_RUN"
+elif [[ -z ${out//[[:space:]]/} ]]; then
+    finding 'gateway-health --certificates' 'no certificate listed' "$DID_NOT_RUN"
+else
+    while IFS= read -r line; do
+        [[ -n ${line//[[:space:]]/} ]] || continue
+        if [[ $line =~ ^([0-9A-Fa-f.:]+)\ ([A-Za-z0-9.-]+)$ ]]; then
+            probe "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+        else
+            finding 'gateway-health --certificates' "unreadable line: $line" "$DID_NOT_RUN"
+        fi
+    done <<<"$out"
+fi
+
+# 3. The backups. A pull that stopped is otherwise indistinguishable from one
+# that works, so the copies are held to the device's own listing.
+if systemctl --user is-failed --quiet gateway-backup.service; then
+    finding gateway-backup.service failed "$NOT_COPIED"
+fi
+
+copied=
+newest_age=
+remote "find $AUTOBACKUP -maxdepth 1 -name 'autobackup_*.unf' -printf '%T@ %f\n'"
+if ((status != 0)); then
+    finding "autobackup listing" "$(session_state)" "$DID_NOT_RUN"
+elif [[ -z ${out//[[:space:]]/} ]]; then
+    finding "$AUTOBACKUP" 'no autobackup on the device' "$NOT_COPIED"
+else
+    now=$(date +%s)
+    listing=$(sort -rn <<<"$out")
+    read -r mtime name <<<"$listing"
+    newest_age=$(((now - ${mtime%.*}) / 86400))
+    if ((now - ${mtime%.*} > NEWEST_MAX_DAYS * 86400)); then
+        finding "$name" "the newest autobackup on the device is ${newest_age}d old" "$NOT_COPIED"
+    fi
+    # The newest one the last pull must have seen: older than a pull period
+    # and a day.
+    while read -r mtime name; do
+        if ((now - ${mtime%.*} > COPIED_AFTER_DAYS * 86400)); then
+            copied=$name
+            break
+        fi
+    done <<<"$listing"
+    if [[ -n $copied && ! -f $COPIES/$copied ]]; then
+        finding "$copied" "on the device for over ${COPIED_AFTER_DAYS}d, not under ~/.config/gw-backups/unifi/" "$NOT_COPIED"
+    fi
+fi
+
+# 4. The findings go by mail, one block each; the subject carries the count.
+if ((${#findings[@]} == 0)); then
+    echo "healthy: gateway-health reports nothing; $probed certificate(s) verified, the nearest expiry ${nearest}d away; ${copied:-no autobackup older than ${COPIED_AFTER_DAYS}d} copied, the newest on the device ${newest_age}d old"
+    exit 0
+fi
+printf '%s\n\n' "${findings[@]}"
+if ! printf '%s\n\n' "${findings[@]}" | mail -A Google -s "[actionable] homelab-ops/check-gateway: ${#findings[@]} finding(s)" "$MAILTO"; then
+    echo "check-gateway: the mail with ${#findings[@]} finding(s) was not sent" >&2
+    exit 1
+fi
