@@ -17,6 +17,12 @@ scoped to the homelab host via a yadm `##h.<hostname>` alternate.
   copied off the device and recent. Mails each finding with the playbook
   that answers it, an entry of §3 of
   [kluster's gateway document](https://github.com/Aetf/kluster/blob/main/docs/physical/gateway.md).
+- `bin/check-in <job>` — a job's check-in to its Home Assistant dead-man
+  timer: one POST, with no body, to the webhook URL in
+  `~/.config/check-in/<job>.url`, whose automation restarts that job's timer.
+  A unit runs it as `ExecStartPost=`, so only a run that succeeded checks in;
+  the timer expiring tells the operator the job stopped. The URL is the
+  credential, so it is read from the file and never passed as an argument.
 - `bin/gateway-backup-pull` — weekly pull of the UniFi controller's
   autobackups, and of each AdGuard resolver's `AdGuardHome.yaml` until the
   cluster declares their configuration, from the gateway into

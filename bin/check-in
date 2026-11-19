@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# A job's check-in to its Home Assistant dead-man timer: one POST, with no
+# body, to the webhook URL in ~/.config/check-in/<job>.url. The webhook's
+# automation restarts that job's timer, and the timer expiring is what tells
+# the operator the job stopped (kluster's docs/operations.md §4, "The homelab
+# host's check-in"). A unit runs it as `ExecStartPost=`, so only a run whose
+# `ExecStart=` exited 0 checks in.
+#
+# The URL's webhook id is the whole of the credential, so it is read from the
+# file into curl's standard input and never passed as an argument. There is no
+# retry: the timer allows for one lost check-in, and the next run checks in.
+# An exit 0 says only that Home Assistant answered; the timer restarting is
+# what proves the check-in landed.
+set -euo pipefail
+usage() { echo "usage: check-in <job>" >&2; exit 2; }
+[ $# -eq 1 ] || usage
+job=$1
+case $job in '' | */* | .*) usage ;; esac
+file=${XDG_CONFIG_HOME:-$HOME/.config}/check-in/$job.url
+[ -r "$file" ] || { echo "check-in: $file holds no URL for $job" >&2; exit 1; }
+url=$(<"$file")
+[ -n "$url" ] || { echo "check-in: $file is empty" >&2; exit 1; }
+if ! code=$(printf 'url = "%s"\n' "$url" | curl --noproxy '*' --silent --show-error --max-time 10 \
+    -X POST -o /dev/null -w '%{http_code}' --config -); then
+    echo "check-in: $job: Home Assistant did not answer" >&2
+    exit 1
+fi
+case $code in
+2??) echo "checked in: $job" ;;
+*) echo "check-in: $job: Home Assistant answered HTTP $code" >&2; exit 1 ;;
+esac
