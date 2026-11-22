@@ -24,11 +24,9 @@ scoped to the homelab host via a yadm `##h.<hostname>` alternate.
   the timer expiring tells the operator the job stopped. The URL is the
   credential, so it is read from the file and never passed as an argument.
 - `bin/gateway-backup-pull` — weekly pull of the UniFi controller's
-  autobackups, and of each AdGuard resolver's `AdGuardHome.yaml` until the
-  cluster declares their configuration, from the gateway into
-  `~/.config/gw-backups`. It reads the same paths before the gateway's
-  cutover to the declared layout and after it; each transfer stands alone,
-  and one that fails is named on stderr and in the exit status.
+  autobackups from the gateway into `~/.config/gw-backups`; a transfer that
+  fails is named on stderr and in the exit status. The AdGuard resolvers'
+  configuration is declared by the cluster and not copied.
 - `bin/check-hath` — periodic health check for the Hentai@Home client
   running in k8s: restarts it when the pod is broken or silent, or when its
   startup connectivity test failed but the public endpoint answers now;
@@ -61,11 +59,6 @@ scoped to the homelab host via a yadm `##h.<hostname>` alternate.
   outside the inbox and lets only actions in. Credentials are injected at
   runtime (`~/.config/dmarc-check/env`), including the Console API key (`ANTHROPIC_AUTH_TOKEN`)
   that `claude -p` authenticates with. See `dmarc-check/dmarc_check.py`.
-- `adguardhome-sync/` — pin wrapper for
-  [bakito/adguardhome-sync](https://github.com/bakito/adguardhome-sync),
-  keeping the AdGuard replica on the gateway in sync with the primary.
-  Config is pure env in the quadlet unit; credentials live in a
-  git-crypted env file in the dotfiles repo.
 - `seedwatch/` — qBittorrent seed lifecycle reconciler with a small web
   UI. The download client hardlinks completed torrents into the media
   library, so `st_nlink == 1` on every media file of a settled torrent
